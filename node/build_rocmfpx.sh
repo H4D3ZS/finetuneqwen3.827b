@@ -46,7 +46,7 @@ cmake --build build --config Release -j"$(nproc)" --target llama-quantize llama-
 echo
 echo "ROCmFPX (HIP) built at $DIR/build/bin/"
 echo "on-node quant test:"
-echo "  python $DIR/convert_hf_to_gguf.py /scratch/distill/student-merged --outfile /scratch/s.gguf --outtype bf16"
+echo "  python3 $DIR/convert_hf_to_gguf.py /scratch/distill/student-merged --outfile /scratch/s.gguf --outtype bf16"
 echo "  $DIR/build/bin/llama-quantize /scratch/s.gguf /scratch/s-fp2.gguf Q2_0_ROCMFPX \$(nproc)"
 echo "  $DIR/build/bin/llama-server -m /scratch/s-fp2.gguf -ngl 99 --port 8080   # smoke it"
 echo

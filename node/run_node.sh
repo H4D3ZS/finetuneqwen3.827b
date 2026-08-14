@@ -36,15 +36,15 @@ mkdir -p "$HF_HOME" "$SCRATCH"
 echo "== 0. deps (torch is ALREADY in the ROCm image; add training + serving libs)"
 # Do NOT reinstall torch - the Unsloth/PyTorch ROCm image ships it built. Reinstalling can
 # break the ROCm build. Only add what's missing.
-python -c "import torch,sys; sys.exit(0 if torch.cuda.is_available() else 1)" || {
+python3 -c "import torch,sys; sys.exit(0 if torch.cuda.is_available() else 1)" || {
   echo "  torch/ROCm not usable in this image - you launched the wrong image."; exit 1; }
 pip install -q -U "transformers>=4.44" accelerate datasets peft "trl>=0.11" "bitsandbytes>=0.44" || true
-python -c "import unsloth" 2>/dev/null || pip install -q -U unsloth || echo "  (unsloth absent -> 03 uses transformers+peft fallback)"
+python3 -c "import unsloth" 2>/dev/null || pip install -q -U unsloth || echo "  (unsloth absent -> 03 uses transformers+peft fallback)"
 # vLLM is COST-CRITICAL for step 2 (67x cheaper than HF).
-python -c "import vllm" 2>/dev/null || pip install -q -U vllm || \
+python3 -c "import vllm" 2>/dev/null || pip install -q -U vllm || \
   echo "  WARNING: vLLM missing - step 2 refuses >200 prompts. Use the vLLM ROCm image, or fix before --poc."
 
-python - <<'PY'
+python3 - <<'PY'
 import torch
 print("torch", torch.__version__, "| hip", getattr(torch.version,'hip',None),
       "| avail", torch.cuda.is_available(), "| n", torch.cuda.device_count())
@@ -53,28 +53,28 @@ if torch.cuda.is_available():
 PY
 
 echo "== 1. corpus ($N prompts; add your transcripts at \$SCRATCH/my_transcripts/)"
-python 01_build_corpus.py --out "$SCRATCH/prompts.jsonl" --n "$N" \
+python3 01_build_corpus.py --out "$SCRATCH/prompts.jsonl" --n "$N" \
   --sources swebench,toolcalls,local_transcripts,seed \
   --local_glob "$SCRATCH/my_transcripts/**/*.jsonl"
 
 echo "== 2. teacher generates targets (vLLM batched, thinking ON)"
-python 02_teacher_generate.py --teacher "$TEACHER" --prompts "$SCRATCH/prompts.jsonl" \
+python3 02_teacher_generate.py --teacher "$TEACHER" --prompts "$SCRATCH/prompts.jsonl" \
   --out "$SCRATCH/teacher_data/" --n "$N" --think
 
 echo "== 3. Unsloth SFT-distill into fast A3B ($EPOCHS epoch)"
 # PRIMARY: sequence-level distillation via Unsloth (low-risk, teacher not loaded here).
 # To use the custom logit-KL trainer instead: set KL=1 (higher quality, more VRAM/risk).
 if [ "${KL:-0}" = "1" ]; then
-  ATTN_IMPL="$ATTN_IMPL" python 03_distill_train.py --teacher "$TEACHER" --student "$STUDENT" \
+  ATTN_IMPL="$ATTN_IMPL" python3 03_distill_train.py --teacher "$TEACHER" --student "$STUDENT" \
     --data "$SCRATCH/teacher_data/" --out "$SCRATCH/student-distilled/" --epochs "$EPOCHS" $LORA --resume
 else
-  ATTN_IMPL="$ATTN_IMPL" python 03_unsloth_sft.py --student "$STUDENT" \
+  ATTN_IMPL="$ATTN_IMPL" python3 03_unsloth_sft.py --student "$STUDENT" \
     --data "$SCRATCH/teacher_data/" --out "$SCRATCH/student-distilled/" --epochs "$EPOCHS" --resume
 fi
 
 echo "== 4. merge LoRA -> full bf16 model (so the download is a real model, not an adapter)"
 if [ -n "$LORA" ]; then
-  python merge_lora.py --adapter "$SCRATCH/student-distilled/" --base "$STUDENT" \
+  python3 merge_lora.py --adapter "$SCRATCH/student-distilled/" --base "$STUDENT" \
     --out "$SCRATCH/student-merged/"
   MERGED="$SCRATCH/student-merged"
 else
@@ -82,7 +82,7 @@ else
 fi
 
 echo "== 5. GATE: eval distilled vs base"
-python eval.py --distilled "$SCRATCH/student-distilled/" --base "$STUDENT" $LORA || true
+python3 eval.py --distilled "$SCRATCH/student-distilled/" --base "$STUDENT" $LORA || true
 
 echo
 if [ "$SMOKE" = "1" ]; then

@@ -18,7 +18,7 @@ python "$ROCMFPX/convert_hf_to_gguf.py" "$SRC" --outfile "$BF16" --outtype bf16
 echo "== quantize -> Q2_0_ROCMFPX (fork-native fast 2-bit, fits 16GB)"
 "$ROCMFPX/build/bin/Release/llama-quantize.exe" "$BF16" "$OUT" Q2_0_ROCMFPX "$(nproc)"
 
-SZ=$(python -c "import os;print(f'{os.path.getsize(r\"$OUT\")/1e9:.1f}')")
+SZ=$(python3 -c "import os;print(f'{os.path.getsize(r\"$OUT\")/1e9:.1f}')")
 echo "== ${SZ}GB -> $OUT"
 rm -f "$BF16" && echo "removed bf16 intermediate (~70GB reclaimed)"
 
