@@ -1,0 +1,13 @@
+# Installed by run_mi300x.sh on the node. Pinned loosely - the ROCm torch wheel is
+# installed separately (--index-url rocm6.2) because it must match the driver.
+transformers>=4.44
+accelerate>=0.34
+datasets>=2.20
+peft>=0.12
+bitsandbytes>=0.44      # multi-backend build has ROCm 4-bit; run_mi300x.sh handles fallback
+sentencepiece
+protobuf
+# torch: DO NOT pin here. run_mi300x.sh installs the ROCm build:
+#   pip install torch --index-url https://download.pytorch.org/whl/rocm6.2
+# flash-attn: optional on ROCm; scripts fall back to attn_implementation=sdpa (ATTN_IMPL env)
+vllm    # ROCm build on the node: pip install vllm  (batched teacher gen - CRITICAL for cost)

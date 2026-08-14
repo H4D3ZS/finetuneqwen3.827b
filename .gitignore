@@ -1,0 +1,38 @@
+# Never commit the heavy / private / generated artifacts
+
+# model weights & GGUFs (huge)
+*.gguf
+*.safetensors
+*.bin
+*.pt
+*.pth
+student-distilled/
+student-merged/
+student-abliterated/
+*-abliterated/
+*-merged/
+ROCmFPX/                 # cloned on the node by build_rocmfpx.sh
+
+# generated data (can be large, and transcripts are PRIVATE)
+prompts.jsonl
+teacher_data/
+my_transcripts/
+my_transcripts.tgz
+offload/
+/scratch/
+
+# secrets / env — never commit tokens
+.env
+*.token
+hf_token*
+HF_TOKEN*
+
+# python
+__pycache__/
+*.pyc
+.venv/
+venv/
+
+# os
+.DS_Store
+Thumbs.db
