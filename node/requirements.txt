@@ -11,3 +11,5 @@ protobuf
 #   pip install torch --index-url https://download.pytorch.org/whl/rocm6.2
 # flash-attn: optional on ROCm; scripts fall back to attn_implementation=sdpa (ATTN_IMPL env)
 vllm    # ROCm build on the node: pip install vllm  (batched teacher gen - CRITICAL for cost)
+trl>=0.11              # SFTTrainer for the Unsloth/fallback SFT path
+unsloth                # PRIMARY trainer (also in the AMD Unsloth image); fallback is transformers+peft

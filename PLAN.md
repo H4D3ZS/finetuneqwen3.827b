@@ -18,6 +18,15 @@ Produce **`qwen38-distilled-a3b-Q2_0_ROCMFPX.gguf`**: a 2-bit MoE GGUF that
 by Qwen Discord: upcycling is a full retrain; distilling into Qwen3.6-35B-A3B (already MoE)
 is not. Student capacity ceiling = 3.6-A3B; we push it toward 3.8 ON the coding distribution.
 
+### Execution stack (decided)
+- **Base image:** AMD Developer Cloud "Unsloth Studio" or "PyTorch 2.10 (ROCm)" — ships ROCm
+  torch pre-built, so we install NOTHING heavy. Removes the torch/ROCm install gamble.
+- **Teacher gen:** vLLM (in image, or the "vLLM 0.27.1" image) — 67x cheaper than HF (R1).
+- **Training:** **Unsloth SFT-distillation** (sequence-level) is PRIMARY — `03_unsloth_sft.py`.
+  The custom logit-KL trainer (`03_distill_train.py`) is the fallback, run with `KL=1`.
+  Unsloth is lower-risk: it auto-handles MoE LoRA targets + 4-bit on ROCm, and the teacher
+  is NOT loaded during training (frees VRAM). See how it softens R2/R3/R4/R7 below.
+
 ## 2. Success criteria / definition of "not fucked up"
 
 GO to full run only if the PoC clears ALL of these:
@@ -40,27 +49,21 @@ If any fail: stop, fix, do NOT spend the remaining credit on a broken pipeline.
   kept only as a tiny-N fallback with a loud cost warning.
 - **Verify on node:** `pip show vllm` succeeds; the script prints "using vLLM" not "HF fallback".
 
-### R2 [RUINS-QUALITY-SILENTLY] Tokenizer ID mismatch
-- **Impact:** KL distillation aligns teacher/student logits by index. Same vocab SIZE
-  (248320) is necessary but NOT sufficient — if the two tokenizers map the same text to
-  different IDs, the KL is noise and the whole run is wasted with no error.
-- **Fix:** 03 now tokenizes a probe string with BOTH tokenizers and aborts if IDs differ,
-  not just if sizes differ.
-- **Verify:** the run prints "tokenizer id-match ok" before training.
+### R2 [SOFTENED by Unsloth SFT] Tokenizer alignment
+- With Unsloth SFT (primary) there is NO logit-KL, so exact tokenizer id-match is not
+  load-bearing — the student just learns text. Same tokenizer family is still wanted.
+- Only relevant if you switch to the logit-KL trainer (`KL=1`), which keeps the probe-string
+  id-match guard that aborts in seconds on mismatch.
 
-### R3 [TRAINING-DOES-NOTHING] LoRA targets wrong modules on the MoE
-- **Impact:** Qwen3.6-35B-A3B is MoE; its expert FFNs may not be named gate_proj/up_proj/
-  down_proj. If LoRA attaches to non-existent/irrelevant modules, gradients flow nowhere
-  and the student never learns — you pay for a no-op.
-- **Fix:** 03 auto-detects Linear module names from the loaded model and targets the real
-  attention + expert projections; prints trainable-param count (must be > 0 and sane).
-- **Verify:** "trainable params: X (Y%)" with Y in ~0.1-2% for LoRA. If 0% -> stop.
+### R3 [SOFTENED by Unsloth] LoRA targets on the MoE
+- Unsloth auto-selects the correct LoRA target modules for the Qwen MoE arch. The fallback
+  trainer auto-detects them too and aborts if 0 trainable params.
+- **Verify:** "trainable params: X (Y%)" with Y ~0.1-2%. If 0% -> stop.
 
-### R4 [MAY-NOT-LOAD] bitsandbytes 4-bit on ROCm/MI300X (gfx942)
-- **Impact:** bnb ROCm support is new; QLoRA may error on this image.
-- **Fix:** 03 tries bnb 4-bit; on failure auto-falls-back to bf16 LoRA. The 192GB fits
-  teacher(54) + student bf16(70) + activations(~30) + LoRA optimizer ≈ 155GB.
-- **Verify:** if you see "bnb 4-bit failed -> bf16 LoRA", that's fine, keep going.
+### R4 [SOFTENED by Unsloth/image] 4-bit on ROCm/gfx942
+- Unsloth's 4-bit path is tuned for ROCm and ships in the AMD Unsloth image. The fallback
+  trainer tries bnb 4-bit and auto-drops to bf16 LoRA (192GB has room) if it fails.
+- **Verify:** training starts and loss decreases; if you see "bf16 LoRA", that's fine.
 
 ### R5 [LOSE-BILLED-HOURS] No resume on crash
 - **Impact:** OOM, disconnect, or preemption mid-train wastes every hour spent so far.
@@ -74,11 +77,9 @@ If any fail: stop, fix, do NOT spend the remaining credit on a broken pipeline.
 - **Fix:** eval.py runs a 10-task held-out coding/tool eval on BOTH the distilled
   student and the base 3.6-A3B, prints a side-by-side. GO only if distilled >= base.
 
-### R7 [SLOW/OOM] Full-vocab KL memory
-- **Impact:** KL over 248320 vocab at seq 4096 = ~2GB per logits tensor x (teacher+student
-  +softmax) ≈ 8-10GB activation. Fine on 192GB but can OOM if batch/seq raised carelessly.
-- **Fix:** keep batch=1, grad_accum=16, seq_len<=4096 for the first run. Do not raise
-  without watching memory. Top-k KL is a future optimization, not needed now.
+### R7 [REMOVED by Unsloth SFT] Full-vocab KL memory
+- Gone on the primary path: SFT has no teacher logits and no teacher in memory during
+  training. Only applies if you run `KL=1` (then keep batch=1, grad_accum=16, seq_len<=4096).
 
 ### R8 [GARBAGE-IN] Corpus quality
 - **Impact:** the student is only as good as what the teacher was asked. Padded/synthetic

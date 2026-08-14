@@ -15,15 +15,24 @@ set -euo pipefail
 cd "$(dirname "$0")"
 
 REPO="${ROCMFPX_REPO:-https://github.com/charlie12345/ROCmFPX.git}"
+# PINNED to the exact commit the local RX 9060 XT setup was validated on. This is the real
+# time-saver: the node builds a byte-identical ROCmFPX, so behavior matches local and you
+# don't debug a version-drift mismatch. Bump only deliberately.
+COMMIT="${ROCMFPX_COMMIT:-b2f5829db8beefc22b49481247d180a48b06793a}"
 DIR="${ROCMFPX_DIR:-$PWD/ROCmFPX}"
 GFX="${GFX:-gfx942}"   # MI300X
 
 echo "== deps"
 which cmake >/dev/null || { echo "install cmake"; sudo apt-get update -q && sudo apt-get install -y cmake git; }
 
-echo "== clone $REPO"
-[ -d "$DIR" ] || git clone --depth 1 "$REPO" "$DIR"
+echo "== clone $REPO @ ${COMMIT:0:12}"
+if [ ! -d "$DIR/.git" ]; then
+  git clone "$REPO" "$DIR"
+fi
 cd "$DIR"
+git fetch --all -q || true
+git checkout -q "$COMMIT" || { echo "commit $COMMIT not found - bump ROCMFPX_COMMIT"; exit 1; }
+echo "  at $(git rev-parse --short HEAD)"
 
 echo "== configure with HIP backend for $GFX"
 cmake -S . -B build \

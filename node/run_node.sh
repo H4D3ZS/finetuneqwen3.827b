@@ -1,7 +1,11 @@
 #!/usr/bin/env bash
 # ON THE MI300X (AMD Developer Cloud, ROCm/gfx942). Runs the CLEAN half of the pipeline:
-# corpus -> teacher -> distill -> merge -> eval, and leaves a bf16 merged model to download.
+# corpus -> teacher(vLLM) -> Unsloth SFT-distill -> merge -> eval. Leaves a bf16 model to pull.
 # Abliteration is deliberately NOT here - it runs on the local machine (off AMD's cloud).
+#
+# BASE IMAGE: launch the droplet from AMD's "Unsloth Studio" OR "PyTorch 2.10 (ROCm)" image.
+# Both ship ROCm PyTorch pre-built (no torch install roulette). Unsloth image also has unsloth.
+# vLLM (step 2) is pip-installed here or use the "vLLM 0.27.1" image if the wheel misbehaves.
 #
 #   export HF_TOKEN=hf_xxx
 #   bash run_node.sh --smoke     # ~$5 end-to-end shakedown (ALWAYS run first)
@@ -29,11 +33,16 @@ export SCRATCH="${SCRATCH:-/scratch/distill}"
 export ATTN_IMPL="${ATTN_IMPL:-sdpa}"      # safe on ROCm; flash-attn is finicky on gfx942
 mkdir -p "$HF_HOME" "$SCRATCH"
 
-echo "== 0. deps (ROCm torch + vLLM ROCm + training libs)"
-pip install -q -U torch --index-url https://download.pytorch.org/whl/rocm6.2 || true
-pip install -q -U "transformers>=4.44" accelerate datasets peft "bitsandbytes>=0.44" || true
-# vLLM is COST-CRITICAL for step 2 (67x cheaper than HF). ROCm build:
-pip install -q -U vllm || echo "  WARNING: vLLM install failed - step 2 will refuse >200 prompts. Fix before --poc."
+echo "== 0. deps (torch is ALREADY in the ROCm image; add training + serving libs)"
+# Do NOT reinstall torch - the Unsloth/PyTorch ROCm image ships it built. Reinstalling can
+# break the ROCm build. Only add what's missing.
+python -c "import torch,sys; sys.exit(0 if torch.cuda.is_available() else 1)" || {
+  echo "  torch/ROCm not usable in this image - you launched the wrong image."; exit 1; }
+pip install -q -U "transformers>=4.44" accelerate datasets peft "trl>=0.11" "bitsandbytes>=0.44" || true
+python -c "import unsloth" 2>/dev/null || pip install -q -U unsloth || echo "  (unsloth absent -> 03 uses transformers+peft fallback)"
+# vLLM is COST-CRITICAL for step 2 (67x cheaper than HF).
+python -c "import vllm" 2>/dev/null || pip install -q -U vllm || \
+  echo "  WARNING: vLLM missing - step 2 refuses >200 prompts. Use the vLLM ROCm image, or fix before --poc."
 
 python - <<'PY'
 import torch
@@ -52,11 +61,16 @@ echo "== 2. teacher generates targets (vLLM batched, thinking ON)"
 python 02_teacher_generate.py --teacher "$TEACHER" --prompts "$SCRATCH/prompts.jsonl" \
   --out "$SCRATCH/teacher_data/" --n "$N" --think
 
-echo "== 3. distill into fast A3B ($EPOCHS epoch, $LORA)"
-ATTN_IMPL="$ATTN_IMPL" python 03_distill_train.py \
-  --teacher "$TEACHER" --student "$STUDENT" \
-  --data "$SCRATCH/teacher_data/" --out "$SCRATCH/student-distilled/" \
-  --epochs "$EPOCHS" $LORA --resume
+echo "== 3. Unsloth SFT-distill into fast A3B ($EPOCHS epoch)"
+# PRIMARY: sequence-level distillation via Unsloth (low-risk, teacher not loaded here).
+# To use the custom logit-KL trainer instead: set KL=1 (higher quality, more VRAM/risk).
+if [ "${KL:-0}" = "1" ]; then
+  ATTN_IMPL="$ATTN_IMPL" python 03_distill_train.py --teacher "$TEACHER" --student "$STUDENT" \
+    --data "$SCRATCH/teacher_data/" --out "$SCRATCH/student-distilled/" --epochs "$EPOCHS" $LORA --resume
+else
+  ATTN_IMPL="$ATTN_IMPL" python 03_unsloth_sft.py --student "$STUDENT" \
+    --data "$SCRATCH/teacher_data/" --out "$SCRATCH/student-distilled/" --epochs "$EPOCHS" --resume
+fi
 
 echo "== 4. merge LoRA -> full bf16 model (so the download is a real model, not an adapter)"
 if [ -n "$LORA" ]; then

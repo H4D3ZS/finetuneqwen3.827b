@@ -66,6 +66,17 @@ it on smoke/PoC runs to save money — the *shipped* quant happens locally after
 | sustained 300 tok/s | **no** — physics (218 GB/s). 300 is a bigger-card burst number. |
 | general Opus clone | **no** — student capacity ceiling is 3.6-A3B; we push it on coding |
 
+## ROCmFPX (referenced, not bundled)
+
+This project builds on **[charlie12345/ROCmFPX](https://github.com/charlie12345/ROCmFPX)**
+(MIT, a llama.cpp fork with ROCmFP2/FP4 tensor formats). It is **not** copied into this repo
+— it's 52GB with build artifacts + local models, and it's already public. Instead:
+- `node/build_rocmfpx.sh` clones and builds it **pinned to commit `b2f5829`**, so the MI300X
+  build matches the locally-validated one exactly (no version drift = the real time-save).
+- Locally you already have it built; `local/convert_quant.sh` uses `$ROCMFPX_DIR`.
+
+Bump the pin only deliberately via `ROCMFPX_COMMIT`.
+
 ## Reference
 - `reference/reference-MTP-and-cliff-findings.md` — measured ROCmFPX MTP/quant findings,
   the hardware laws, and why only uniform 2-bit is fast on the 9060 XT.

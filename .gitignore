@@ -11,7 +11,6 @@ student-merged/
 student-abliterated/
 *-abliterated/
 *-merged/
-ROCmFPX/                 # cloned on the node by build_rocmfpx.sh
 
 # generated data (can be large, and transcripts are PRIVATE)
 prompts.jsonl
