@@ -23,6 +23,15 @@ Start with 10-20k focused prompts for a LoRA run. Scale to 100k+ only for full-p
 """
 import argparse, os, json, glob, random, re
 
+# Redact obvious secrets scraped from real transcripts so they can't be memorized by the
+# student. Redact (not drop) — the surrounding task is still useful training signal.
+_SECRET_RE = re.compile(
+    r"(whsk_[A-Za-z0-9]{8,}|sk-[A-Za-z0-9]{16,}|ghp_[A-Za-z0-9]{20,}|gho_[A-Za-z0-9]{20,}"
+    r"|AKIA[0-9A-Z]{16}|hf_[A-Za-z0-9]{20,}|xox[baprs]-[A-Za-z0-9-]{10,}"
+    r"|eyJ[A-Za-z0-9_-]{10,}\.[A-Za-z0-9_-]{10,}\.[A-Za-z0-9_-]{10,})")
+def _scrub(s):
+    return _SECRET_RE.sub("<REDACTED>", s)
+
 def parse():
     p = argparse.ArgumentParser()
     p.add_argument("--out", default="prompts.jsonl")
@@ -80,6 +89,29 @@ def from_toolcalls(limit):
                    "Call tools with correctly-typed nested arguments.")
     print(f"  [toolcalls] {len(out)} prompts"); return out
 
+def _clean_prompt(s):
+    """Reject junk pulled from transcripts: mojibake, pasted logs/output, meta-text."""
+    if not s or "�" in s:                      # replacement char -> encoding garbage
+        return None
+    s = s.strip()
+    if not (30 <= len(s) <= 2000):                  # too short, or a pasted blob
+        return None
+    printable = sum(c.isprintable() or c in "\n\t" for c in s)
+    if printable / len(s) < 0.95:                   # control-char heavy
+        return None
+    nonascii = sum(ord(c) > 127 for c in s)
+    if nonascii / len(s) > 0.15:                    # mojibake / non-English dump
+        return None
+    low = s.lower()
+    # drop obvious non-tasks: tool results, our own status text, pure error dumps
+    if any(k in low for k in ("tool_use_id", "system-reminder", "task-notification",
+                              "traceback (most recent call last)", "decode tok/s", "tok/s",
+                              "[image:", "displayed at", "multiply coordinates", "coordinates by",
+                              "<command-name", "<command-message", "<local-command", "caveat:",
+                              ".claude\\image-cache", "screenshot")):
+        return None
+    return _scrub(s)
+
 def from_local(glob_pat, limit):
     if not glob_pat: return []
     out = []
@@ -92,12 +124,14 @@ def from_local(glob_pat, limit):
                     # pull user-turn text out of Claude Code transcript rows
                     msg = obj.get("message", obj)
                     content = msg.get("content") if isinstance(msg, dict) else None
-                    if isinstance(content, str) and len(content) > 40 and msg.get("role") == "user":
-                        out.append(content)
-                    elif isinstance(content, list):
+                    if isinstance(content, str) and msg.get("role") == "user":
+                        c = _clean_prompt(content)
+                        if c: out.append(c)
+                    elif isinstance(content, list) and msg.get("role") == "user":
                         for b in content:
-                            if isinstance(b, dict) and b.get("type") == "text" and len(b.get("text","")) > 40:
-                                out.append(b["text"])
+                            if isinstance(b, dict) and b.get("type") == "text":
+                                c = _clean_prompt(b.get("text",""))
+                                if c: out.append(c)
                     if len(out) >= limit: break
         except Exception: continue
         if len(out) >= limit: break

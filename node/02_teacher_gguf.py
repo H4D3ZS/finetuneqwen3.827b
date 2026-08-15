@@ -35,7 +35,11 @@ def parse():
     p.add_argument("--top_p", type=float, default=0.95)
     p.add_argument("--concurrency", type=int, default=8, help="parallel requests = server -np")
     p.add_argument("--shard", type=int, default=2000)
-    p.add_argument("--think", action="store_true", help="request thinking (default on for Qwen3.8)")
+    p.add_argument("--think", action="store_true",
+                   help="request thinking. DEFAULT OFF: this Qwen3.8-27B is a thinking model "
+                        "that otherwise burns the whole token budget in <think> and returns "
+                        "EMPTY content (validated: 30/40 empty). Off -> short clean code answers, "
+                        "which is also what a fast A3B student wants (short chains, no 32k stalls).")
     return p.parse_args()
 
 def load_prompts(path, n):
@@ -52,14 +56,22 @@ def one_request(base_url, prompt, a):
         "model": "teacher", "messages": [{"role": "user", "content": prompt}],
         "temperature": a.temperature, "top_p": a.top_p, "max_tokens": a.max_new,
         "stream": False,
+        # Qwen3.8 is a thinking model. Unless --think, disable thinking via the template so the
+        # model goes straight to the answer. WITHOUT this it returns empty `content` (all output
+        # lands in `reasoning_content` and it never emits </think> within budget). Validated.
+        "chat_template_kwargs": {"enable_thinking": bool(a.think)},
     }
-    # Qwen thinking is controlled by the model's chat template; llama-server applies it with
-    # --jinja. Nothing extra needed here - the abliterated GGUF's template handles it.
     req = urllib.request.Request(base_url.rstrip("/") + "/v1/chat/completions",
         data=json.dumps(body).encode(), headers={"Content-Type": "application/json"})
     with urllib.request.urlopen(req, timeout=1200) as r:
         d = json.load(r)
-    return d["choices"][0]["message"]["content"]
+    m = d["choices"][0]["message"]
+    # Prefer content; fall back to reasoning_content so --think runs still capture the trace.
+    out = (m.get("content") or "").strip()
+    if not out and a.think:
+        rc = (m.get("reasoning_content") or "").strip()
+        out = f"<think>\n{rc}\n</think>" if rc else ""
+    return out
 
 def worker(base_url, a, in_q, out_list, lock, prog):
     while True:
@@ -68,10 +80,17 @@ def worker(base_url, a, in_q, out_list, lock, prog):
         for attempt in range(3):
             try:
                 comp = one_request(base_url, prompt, a)
+                # Drop junk: empty, too short, or a degenerate </think> repetition loop.
+                if len(comp) < 40 or comp.count("</think>") > 3:
+                    with lock:
+                        prog[1] += 1
+                        if attempt == 2: print(f"  [drop idx {idx}] empty/degenerate", file=sys.stderr, flush=True)
+                    if attempt < 2: time.sleep(1); continue
+                    break
                 with lock:
                     out_list.append((prompt, comp))
                     prog[0] += 1
-                    if prog[0] % 25 == 0: print(f"  {prog[0]} done", flush=True)
+                    if prog[0] % 25 == 0: print(f"  {prog[0]} kept ({prog[1]} dropped)", flush=True)
                 break
             except Exception as e:
                 if attempt == 2:
@@ -100,7 +119,7 @@ def main():
         sys.exit(f"teacher not reachable at {a.base_url} ({e}). Start it with serve_teacher.sh first.")
     in_q = queue.Queue()
     for i, p in enumerate(prompts): in_q.put((i, p))
-    out_list, lock, prog = [], threading.Lock(), [0]
+    out_list, lock, prog = [], threading.Lock(), [0, 0]  # [kept, dropped]
     threads = [threading.Thread(target=worker, args=(a.base_url, a, in_q, out_list, lock, prog))
                for _ in range(a.concurrency)]
     t0 = time.time()
