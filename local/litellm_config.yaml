@@ -1,0 +1,40 @@
+# LiteLLM gateway: Anthropic /v1/messages (what Claude Code speaks)
+#   -> OpenAI /v1/chat/completions (what the ROCmFPX llama-server speaks)
+#
+#   litellm --config local/litellm_config.yaml --port 4000
+#
+# The backend must be the ROCmFPX fork's llama-server, NOT lemonade — the shipped
+# GGUF uses fork-native ggml type 102 (Q4_0_ROCMFP4_COHERENT) for output.weight,
+# which upstream llama.cpp (all of lemonade's llamacpp backends) rejects.
+
+# NOTE: only ONE model fits 16GB at a time, so only one llama-server runs on :8080.
+# Whichever GGUF is currently served there answers all aliases below. Swap the model by
+# restarting the server (serve_distilled.sh vs serve_dense27b.sh); no gateway change needed.
+model_list:
+  # Dense Qwen3.8-27B (coherent). Point Claude Code here when serve_dense27b.sh is running.
+  - model_name: qwen38-27b-dense
+    litellm_params:
+      model: openai/qwen38-27b
+      api_base: http://127.0.0.1:8080/v1
+      api_key: none
+
+  # Distilled A3B (fast, lower quality). Point here when serve_distilled.sh is running.
+  - model_name: qwen38-distill-a3b-coder
+    litellm_params:
+      model: openai/qwen38d
+      api_base: http://127.0.0.1:8080/v1
+      api_key: none
+
+  # Claude Code's small/fast slot -> same local server.
+  - model_name: qwen38-distill-a3b-coder-fast
+    litellm_params:
+      model: openai/qwen38d
+      api_base: http://127.0.0.1:8080/v1
+      api_key: none
+
+litellm_settings:
+  drop_params: true          # silently drop Anthropic params llama.cpp doesn't take
+  request_timeout: 600
+
+general_settings:
+  master_key: sk-local

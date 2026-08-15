@@ -14,7 +14,11 @@ student-abliterated/
 
 # generated data (can be large, and transcripts are PRIVATE)
 prompts.jsonl
+prompts*.jsonl
+node/prompts*.jsonl
 teacher_data/
+teacher_data*/
+node/teacher_data*/
 my_transcripts/
 my_transcripts.tgz
 offload/
