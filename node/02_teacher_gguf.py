@@ -1,114 +1,154 @@
 #!/usr/bin/env python3
 """
-Step 2 (GGUF-teacher path): generate distillation targets from an ALREADY-ABLITERATED
-Qwen3.8-27B GGUF served by llama.cpp/ROCmFPX.
+Step 2 (GGUF teacher): generate distillation targets by hitting the abliterated teacher's
+llama-server API concurrently.
 
-Why this instead of the HF/vLLM path:
-  - The abliterated 3.8 (Blackfrost-AI) ships as GGUF only - no safetensors - so it can't
-    be loaded by transformers/vLLM. llama.cpp serves it natively.
-  - This ENTIRELY avoids the vLLM-clobbers-ROCm-torch failure: the teacher runs in
-    llama-server (a separate process), the student trains in Unsloth. No shared torch.
-  - Bonus: the teacher is abliterated, so its completions are uncensored -> the student
-    learns to comply on authorized security work. Abliteration is transferred through
-    distillation; no separate abliteration step needed (see the honest caveat in PLAN.md R12).
+WHY THIS EXISTS (R1 + the smoke-run-1 failure):
+  - The teacher is a separate PROCESS, not a python import. No vLLM, no HF model load, and
+    critically no pip install that can swap ROCm torch for a CUDA wheel. The env that killed
+    smoke run 1 cannot break this path.
+  - llama-server batches across --parallel slots, so N concurrent requests are served
+    together. That is what makes this cheap rather than 67x expensive.
+  - The teacher is ABLITERATED, so its answers carry no refusals -> the student inherits
+    compliance on the corpus distribution (see R12: this is TRANSFERRED abliteration, which
+    covers what the corpus covers, not a global guarantee).
 
-Prereq: a llama-server is already running the abliterated GGUF, e.g. via serve_teacher.sh:
-    llama-server -m Qwen3.8-27B-ABLITERATED-Q8_0.gguf -ngl 99 -fa on -np 8 --port 8080
-
-Then:
-    python3 02_teacher_gguf.py --base-url http://127.0.0.1:8080 \
-        --prompts prompts.jsonl --out teacher_data/ --n 8000 --concurrency 8
-
-Concurrency drives llama-server's parallel slots (-np). 8 parallel requests on an MI300X
-serving Q8_0 is fast and cheap - this is the batched-equivalent for a GGUF teacher.
+    bash serve_teacher.sh &
+    python3 02_teacher_gguf.py --prompts prompts.jsonl --out teacher_data/ --n 8000 --think
 """
-import argparse, os, json, sys, time, threading, queue, urllib.request
+import argparse, os, json, sys, time
+import threading
+from concurrent.futures import ThreadPoolExecutor, as_completed
+import urllib.request, urllib.error
+
 
 def parse():
     p = argparse.ArgumentParser()
-    p.add_argument("--base-url", default="http://127.0.0.1:8080")
+    p.add_argument("--url", default="http://127.0.0.1:8081/v1/chat/completions")
     p.add_argument("--prompts", required=True)
     p.add_argument("--out", default="teacher_data")
     p.add_argument("--n", type=int, default=8000)
-    p.add_argument("--max_new", type=int, default=4096, help="thinking eats budget; keep >=4096")
+    p.add_argument("--max_new", type=int, default=4096)
     p.add_argument("--temperature", type=float, default=1.0)
     p.add_argument("--top_p", type=float, default=0.95)
-    p.add_argument("--concurrency", type=int, default=8, help="parallel requests = server -np")
     p.add_argument("--shard", type=int, default=2000)
-    p.add_argument("--think", action="store_true", help="request thinking (default on for Qwen3.8)")
+    p.add_argument("--think", action="store_true", help="keep the teacher's reasoning block")
+    p.add_argument("--concurrency", type=int, default=16,
+                   help="match serve_teacher.sh PARALLEL")
+    p.add_argument("--timeout", type=int, default=900)
     return p.parse_args()
+
 
 def load_prompts(path, n):
     out = []
     with open(path, encoding="utf-8") as f:
         for line in f:
-            out.append(json.loads(line)["prompt"]);
-            if len(out) >= n: break
+            line = line.strip()
+            if not line:
+                continue
+            out.append(json.loads(line)["prompt"])
+            if len(out) >= n:
+                break
     return out
 
-def one_request(base_url, prompt, a):
-    # OpenAI-compatible chat endpoint that llama-server exposes.
+
+def wait_for_server(url, tries=60):
+    health = url.rsplit("/v1/", 1)[0] + "/health"
+    for i in range(tries):
+        try:
+            with urllib.request.urlopen(health, timeout=5) as r:
+                if r.status == 200:
+                    print(f"teacher up after {i}s")
+                    return True
+        except Exception:
+            time.sleep(1)
+    return False
+
+
+def one(a, prompt):
     body = {
-        "model": "teacher", "messages": [{"role": "user", "content": prompt}],
-        "temperature": a.temperature, "top_p": a.top_p, "max_tokens": a.max_new,
+        "messages": [{"role": "user", "content": prompt}],
+        "max_tokens": a.max_new,
+        "temperature": a.temperature,
+        "top_p": a.top_p,
         "stream": False,
     }
-    # Qwen thinking is controlled by the model's chat template; llama-server applies it with
-    # --jinja. Nothing extra needed here - the abliterated GGUF's template handles it.
-    req = urllib.request.Request(base_url.rstrip("/") + "/v1/chat/completions",
-        data=json.dumps(body).encode(), headers={"Content-Type": "application/json"})
-    with urllib.request.urlopen(req, timeout=1200) as r:
-        d = json.load(r)
-    return d["choices"][0]["message"]["content"]
+    if not a.think:
+        body["chat_template_kwargs"] = {"enable_thinking": False}
+    req = urllib.request.Request(
+        a.url, data=json.dumps(body).encode(),
+        headers={"Content-Type": "application/json"})
+    with urllib.request.urlopen(req, timeout=a.timeout) as r:
+        obj = json.loads(r.read().decode())
+    msg = obj["choices"][0]["message"]
+    text = msg.get("content") or ""
+    # llama.cpp surfaces the thinking block separately on reasoning models; keep it so the
+    # student learns to reason, which is the whole point of reasoning distillation.
+    if a.think and msg.get("reasoning_content"):
+        text = f"<think>\n{msg['reasoning_content']}\n</think>\n\n{text}"
+    return text
 
-def worker(base_url, a, in_q, out_list, lock, prog):
-    while True:
-        try: idx, prompt = in_q.get_nowait()
-        except queue.Empty: return
-        for attempt in range(3):
-            try:
-                comp = one_request(base_url, prompt, a)
-                with lock:
-                    out_list.append((prompt, comp))
-                    prog[0] += 1
-                    if prog[0] % 25 == 0: print(f"  {prog[0]} done", flush=True)
-                break
-            except Exception as e:
-                if attempt == 2:
-                    with lock: print(f"  [skip idx {idx}] {type(e).__name__}: {e}", file=sys.stderr)
-                else: time.sleep(2)
-        in_q.task_done()
 
-def write_shards(pairs, out_dir, shard_size):
-    os.makedirs(out_dir, exist_ok=True)
-    n = 0
-    for s, i in enumerate(range(0, len(pairs), shard_size)):
-        with open(os.path.join(out_dir, f"shard_{s:04d}.jsonl"), "w", encoding="utf-8") as f:
-            for pr, co in pairs[i:i+shard_size]:
-                f.write(json.dumps({"prompt": pr, "completion": co}) + "\n")
-        n = s + 1
-    print(f"wrote {len(pairs)} pairs across {n} shards -> {out_dir}/")
+def load_done_prompts(out_dir):
+    """Resume support: prompts already completed (so a re-run skips them)."""
+    done = set()
+    stream = os.path.join(out_dir, "stream.jsonl")
+    if os.path.exists(stream):
+        with open(stream, encoding="utf-8") as f:
+            for line in f:
+                try:
+                    done.add(json.loads(line)["prompt"])
+                except Exception:
+                    pass
+    return done
+
 
 def main():
     a = parse()
     prompts = load_prompts(a.prompts, a.n)
-    print(f"{len(prompts)} prompts -> teacher at {a.base_url} (concurrency {a.concurrency})")
-    # sanity: is the teacher up?
-    try:
-        urllib.request.urlopen(a.base_url.rstrip("/") + "/health", timeout=10)
-    except Exception as e:
-        sys.exit(f"teacher not reachable at {a.base_url} ({e}). Start it with serve_teacher.sh first.")
-    in_q = queue.Queue()
-    for i, p in enumerate(prompts): in_q.put((i, p))
-    out_list, lock, prog = [], threading.Lock(), [0]
-    threads = [threading.Thread(target=worker, args=(a.base_url, a, in_q, out_list, lock, prog))
-               for _ in range(a.concurrency)]
+    os.makedirs(a.out, exist_ok=True)
+    # RESUME + CRASH-SAFETY: skip prompts already in stream.jsonl, append new ones as they land.
+    # Killing this process at ANY point keeps every completion written so far (fixes the
+    # "all-in-memory, lost on kill" flaw).
+    done_prompts = load_done_prompts(a.out)
+    todo = [p for p in prompts if p not in done_prompts]
+    print(f"{len(prompts)} prompts ({len(done_prompts)} already done, {len(todo)} to do), "
+          f"think={a.think}, concurrency={a.concurrency}")
+    if not todo:
+        print("nothing to do; all prompts already generated.")
+        print("next: 03_unsloth_sft.py --data", a.out); return
+    if not wait_for_server(a.url):
+        sys.exit("teacher server never came up - start serve_teacher.sh first")
+
+    stream_path = os.path.join(a.out, "stream.jsonl")
+    lock = threading.Lock()
+    done = failed = 0
     t0 = time.time()
-    for t in threads: t.start()
-    for t in threads: t.join()
-    print(f"generated {len(out_list)} completions in {time.time()-t0:.0f}s")
-    write_shards(out_list, a.out, a.shard)
+    fout = open(stream_path, "a", encoding="utf-8")
+    with ThreadPoolExecutor(max_workers=a.concurrency) as ex:
+        futs = {ex.submit(one, a, p): p for p in todo}
+        for fut in as_completed(futs):
+            p = futs[fut]
+            try:
+                co = fut.result()
+                with lock:
+                    fout.write(json.dumps({"prompt": p, "completion": co}) + "\n")
+                    fout.flush(); os.fsync(fout.fileno())   # durable per completion
+            except Exception as e:
+                failed += 1
+                print(f"  [warn] prompt failed: {type(e).__name__}: {e}", file=sys.stderr)
+            done += 1
+            if done % 25 == 0 or done == len(todo):
+                el = time.time() - t0
+                rate = done / el if el else 0
+                eta = (len(todo) - done) / rate if rate else 0
+                print(f"  {done}/{len(todo)}  {rate:.2f}/s  eta {eta/60:.1f}m  failed={failed}",
+                      flush=True)
+    fout.close()
+    total = len(load_done_prompts(a.out))
+    print(f"{done} new ({failed} failed), {total} total saved -> {stream_path}", flush=True)
     print("next: 03_unsloth_sft.py --data", a.out)
+
 
 if __name__ == "__main__":
     main()

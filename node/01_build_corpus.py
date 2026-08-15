@@ -2,83 +2,155 @@
 """
 Step 1: build the distillation corpus - the PROMPTS the teacher will answer.
 
-Distill NARROW. A 3B-active student absorbs a focused distribution far better than a broad
-one, so the corpus is agentic coding + tool use + repo edits - the exact jobs where
-Qwen3.8-27B beats Opus (SWE-bench Pro, QwenSWEBench, IFBench). Do NOT pad it with general
-chat; that dilutes the capacity you have.
+Distill NARROW and AGENTIC. A 3B-active student absorbs a focused distribution far better than
+a broad one, so the corpus is agentic coding + tool use + repo edits - the exact jobs where the
+abliterated Qwen3.8-27B teacher is strong, and exactly where the 850-example PoC was WEAK
+(both tool-call eval tasks failed).
 
-Sources (mix to taste with --weights):
-  - real GitHub issues/PRs (repo-level edit tasks)   -> needs a dump or the GH API
-  - SWE-bench / SWE-gym style task statements
-  - tool-call scenarios (function-calling traces)
-  - your OWN transcripts: HackTheBox sessions, your own project's coding tasks
+KEY DESIGN CHANGE (v2): the dominant source is `cc_tools` - scenarios phrased with Claude Code's
+REAL tool schemas (Bash/Read/Edit/Write/Grep/Glob). We do this because the student is meant to be
+used INSIDE Claude Code; training on the exact tool protocol it will be invoked with is what makes
+tool-calling transfer instead of collapsing (the PoC lesson).
 
-This script emits prompts.jsonl of {prompt}. Step 02 has the teacher answer them.
+Sources (comma list via --sources, weighted by --weights):
+  cc_tools           Claude-Code-native tool-call scenarios (DEFAULT-HEAVY)
+  agentic            multi-step repo tasks (locate -> edit -> test -> verify)
+  swebench           real issue statements (HF datasets)
+  debug              "here's a failing test / traceback, fix it" tasks
+  local_transcripts  YOUR own Claude Code sessions (best signal; needs --local_glob)
+  seed               small hand-written fallback
 
-    python 01_build_corpus.py --out prompts.jsonl --n 20000 \
-        --sources swebench,toolcalls,local_transcripts \
-        --local_glob "C:/Users/HADES/.claude/projects/**/*.jsonl"
+    python3 01_build_corpus.py --out prompts.jsonl --n 8000 \
+        --sources cc_tools,agentic,swebench,debug --weights 4,2,2,2
 
-Start with 10-20k focused prompts for a LoRA run. Scale to 100k+ only for full-parameter.
+Scale: 6-10k focused prompts for a strong LoRA run (PoC was 850). 100k+ only for full-parameter.
 """
-import argparse, os, json, glob, random, re
+import argparse, os, json, glob, random
 
-def parse():
-    p = argparse.ArgumentParser()
-    p.add_argument("--out", default="prompts.jsonl")
-    p.add_argument("--n", type=int, default=20000)
-    p.add_argument("--sources", default="swebench,toolcalls,local_transcripts",
-                   help="comma list: swebench,toolcalls,local_transcripts,seed")
-    p.add_argument("--local_glob", default="", help="glob of your own *.jsonl transcripts")
-    p.add_argument("--hf_swebench", default="princeton-nlp/SWE-bench_Lite",
-                   help="HF dataset id for task statements (needs `datasets`)")
-    p.add_argument("--seed", type=int, default=0)
-    return p.parse_args()
+CC_TOOLS = {
+    "Bash":  'run a shell command. args: {"command": str, "description": str, "timeout"?: int}',
+    "Read":  'read a file. args: {"file_path": str, "offset"?: int, "limit"?: int}',
+    "Edit":  'exact string replace in a file. args: {"file_path": str, "old_string": str, "new_string": str, "replace_all"?: bool}',
+    "Write": 'write/overwrite a file. args: {"file_path": str, "content": str}',
+    "Grep":  'ripgrep search. args: {"pattern": str, "path"?: str, "glob"?: str, "output_mode"?: "content|files_with_matches"}',
+    "Glob":  'find files by glob. args: {"pattern": str, "path"?: str}',
+}
+
+# Combinatorial task generation: ACTION x SUBSYSTEM x STACK x QUALITY-BAR gives tens of
+# thousands of distinct, realistic repo tasks - far more diverse than a fixed list, which is
+# what a 3B-active student needs to generalize tool-use instead of memorizing phrasings.
+ACTIONS = [
+    "Find and fix the bug causing", "Add a feature to", "Refactor for clarity",
+    "Optimize the hot path in", "Add a regression test for", "Harden the security of",
+    "Migrate", "Add observability (logs+metrics) to", "Make idempotent", "Add input validation to",
+    "Remove the N+1 query in", "Add a feature flag around", "Write integration tests for",
+    "Diagnose the memory leak in", "Add retry-with-backoff to", "Rate-limit",
+]
+SUBSYSTEMS = [
+    "the JWT auth middleware", "the payment/checkout handler", "the file-upload endpoint",
+    "the search indexer", "the websocket gateway", "the background job queue",
+    "the inventory update path", "the user-profile service", "the CSV export job",
+    "the OAuth callback flow", "the caching layer", "the database migration runner",
+    "the rate limiter", "the email-sending worker", "the report generator",
+    "the API pagination logic", "the session store", "the feature-flag service",
+    "the audit-log writer", "the third-party geocoder client",
+]
+STACKS = [
+    "Python/FastAPI", "Python/Django", "Go/chi", "TypeScript/Express", "TypeScript/Next.js",
+    "Rust/axum", "Java/Spring Boot", "Ruby/Rails", "Node/NestJS", "C#/ASP.NET",
+]
+BARS = [
+    "Keep all existing tests green.", "Add a test that would have caught the bug.",
+    "Explain the root cause before editing.", "Show the exact minimal diff.",
+    "Verify with a command after the change.", "Note any edge cases you handled.",
+]
+
+def _make_task():
+    return (f"{random.choice(ACTIONS)} {random.choice(SUBSYSTEMS)} "
+            f"in a {random.choice(STACKS)} codebase. {random.choice(BARS)}")
+
+def _tool_block(k):
+    names = random.sample(list(CC_TOOLS), k=k)
+    return "\n".join(f"- {n}: {CC_TOOLS[n]}" for n in names)
+
+def from_cc_tools(limit):
+    out = []
+    for _ in range(limit):
+        task = _make_task()
+        tools = _tool_block(random.randint(3, len(CC_TOOLS)))
+        out.append(
+            "You are an agentic coding assistant operating in a real repository with these tools:\n"
+            f"{tools}\n\n"
+            f"Task: {task}\n\n"
+            "Work step by step. When you need to act, emit a tool call as a JSON object "
+            '{\"tool\": <name>, \"args\": {...}} with correctly-typed, correctly-nested arguments. '
+            "Inspect before you edit, and verify with a test or command after."
+        )
+    print(f"  [cc_tools] {len(out)}"); return out
+
+def from_agentic(limit):
+    out = []
+    for _ in range(limit):
+        task = _make_task()
+        out.append(
+            "You are working in a real codebase. Complete this task end to end: "
+            "locate the relevant files, make the change, and verify it.\n\n"
+            f"Task: {task}\n\n"
+            "Explain your plan, show the exact diffs, and state how you verified the result."
+        )
+    print(f"  [agentic] {len(out)}"); return out
+
+def from_debug(limit):
+    tracebacks = [
+        ("Python", "TypeError: 'NoneType' object is not subscriptable", "user_service.py", "get_profile"),
+        ("Python", "sqlalchemy.exc.OperationalError: database is locked", "db.py", "commit"),
+        ("Python", "RecursionError: maximum recursion depth exceeded", "tree.py", "walk"),
+        ("Python", "KeyError: 'user_id'", "session.py", "load"),
+        ("Go",     "panic: runtime error: index out of range [3] with length 3", "router.go", "dispatch"),
+        ("Go",     "fatal error: concurrent map writes", "cache.go", "Set"),
+        ("Go",     "panic: send on closed channel", "worker.go", "enqueue"),
+        ("Rust",   "thread 'main' panicked at 'called `Result::unwrap()` on an `Err`'", "cache.rs", "insert"),
+        ("Rust",   "thread 'main' has overflowed its stack", "parser.rs", "parse_expr"),
+        ("TypeScript", "Uncaught (in promise) TypeError: cannot read properties of undefined (reading 'id')", "cart.ts", "checkout"),
+        ("TypeScript", "RangeError: Maximum call stack size exceeded", "reducer.ts", "merge"),
+        ("Java",   "java.lang.NullPointerException", "OrderService.java", "process"),
+        ("Java",   "java.util.ConcurrentModificationException", "Registry.java", "iterate"),
+        ("Ruby",   "ActiveRecord::RecordNotFound", "orders_controller.rb", "show"),
+        ("C#",     "System.InvalidOperationException: Collection was modified", "Cache.cs", "Evict"),
+        ("Node",   "Error: ECONNRESET", "client.js", "request"),
+    ]
+    stacks = ["under load", "only in production", "intermittently in CI", "after the last deploy",
+              "for large inputs", "on concurrent requests", "on the retry path"]
+    out = []
+    for _ in range(limit):
+        lang, err, fn, func = random.choice(tracebacks)
+        cond = random.choice(stacks)
+        err = f"{err}   ({cond})"
+        out.append(
+            f"A {lang} service is crashing in production with:\n\n    {err}\n\n"
+            f"It points at `{func}` in `{fn}`. Reason about the root cause, ask for the minimal "
+            "code you'd need to see, then give the fix and a regression test that would have caught it."
+        )
+    print(f"  [debug] {len(out)}"); return out
 
 def from_swebench(hf_id, limit):
     try:
         from datasets import load_dataset
     except ImportError:
-        print("  [swebench] pip install datasets to use this source; skipping"); return []
-    out = []
+        print("  [swebench] `pip install datasets` to use; skipping"); return []
     try:
         ds = load_dataset(hf_id, split="test")
     except Exception as e:
         print(f"  [swebench] load failed: {e}; skipping"); return []
+    out = []
     for r in ds:
         problem = r.get("problem_statement") or r.get("text") or ""
         if not problem: continue
-        out.append("You are an agentic coding assistant working in a real repository. "
-                   "Read the issue, locate the relevant files, and implement the fix.\n\n"
+        out.append("You are an agentic coding assistant in a real repository. Read the issue, "
+                   "locate the relevant files, implement the fix, and add/adjust tests.\n\n"
                    f"Issue:\n{problem}\n\nProduce the patch and explain each change.")
         if len(out) >= limit: break
-    print(f"  [swebench] {len(out)} prompts"); return out
-
-def from_toolcalls(limit):
-    # synthetic-but-realistic tool-call scenarios: the model must emit a tool call with
-    # correctly-typed nested args (the thing unsloth flags as improved in 3.8).
-    tools = [
-        ("run_command", "execute a shell command", '{"cmd": "...", "cwd": "..."}'),
-        ("read_file", "read a file range", '{"path": "...", "start": 1, "end": 40}'),
-        ("edit_file", "apply a search/replace edit", '{"path": "...", "search": "...", "replace": "..."}'),
-        ("http_request", "make an HTTP call", '{"method": "GET", "url": "...", "headers": {}}'),
-        ("query_db", "run a parameterized SQL query", '{"sql": "...", "params": []}'),
-    ]
-    tasks = [
-        "Find all SUID binaries on the target and report likely privesc paths.",
-        "Enumerate the web app's API routes and flag any missing auth middleware.",
-        "Add a rate limiter to the /login route and write the test first.",
-        "Given a Log4Shell-vulnerable lab box, craft the JNDI payload and the listener.",
-        "Refactor the payment gateway to route on card BIN, then update the tests.",
-        "Reconcile yesterday's Stripe payouts against the orders table; report mismatches.",
-    ]
-    out = []
-    for _ in range(limit):
-        t = random.choice(tasks); name, desc, schema = random.choice(tools)
-        out.append(f"You have tools available. Task: {t}\n"
-                   f"Use the `{name}` tool ({desc}, schema {schema}) when needed. "
-                   "Call tools with correctly-typed nested arguments.")
-    print(f"  [toolcalls] {len(out)} prompts"); return out
+    print(f"  [swebench] {len(out)}"); return out
 
 def from_local(glob_pat, limit):
     if not glob_pat: return []
@@ -89,7 +161,6 @@ def from_local(glob_pat, limit):
                 for line in f:
                     try: obj = json.loads(line)
                     except Exception: continue
-                    # pull user-turn text out of Claude Code transcript rows
                     msg = obj.get("message", obj)
                     content = msg.get("content") if isinstance(msg, dict) else None
                     if isinstance(content, str) and len(content) > 40 and msg.get("role") == "user":
@@ -101,26 +172,42 @@ def from_local(glob_pat, limit):
                     if len(out) >= limit: break
         except Exception: continue
         if len(out) >= limit: break
-    print(f"  [local] {len(out)} prompts from your transcripts"); return out
+    print(f"  [local] {len(out)} from your transcripts"); return out
+
+def parse():
+    p = argparse.ArgumentParser()
+    p.add_argument("--out", default="prompts.jsonl")
+    p.add_argument("--n", type=int, default=8000)
+    p.add_argument("--sources", default="cc_tools,agentic,swebench,debug")
+    p.add_argument("--weights", default="", help="comma weights matching --sources, e.g. 4,2,2,2")
+    p.add_argument("--local_glob", default="")
+    p.add_argument("--hf_swebench", default="princeton-nlp/SWE-bench_Lite")
+    p.add_argument("--seed", type=int, default=0)
+    return p.parse_args()
 
 def main():
     a = parse(); random.seed(a.seed)
-    want = a.sources.split(",")
-    per = max(1, a.n // max(1, len(want)))
+    want = [s for s in a.sources.split(",") if s]
+    weights = [int(x) for x in a.weights.split(",")] if a.weights else [1]*len(want)
+    weights = (weights + [1]*len(want))[:len(want)]
+    tot = sum(weights)
+    quota = {s: max(1, a.n * w // tot) for s, w in zip(want, weights)}
     pool = []
-    if "swebench" in want:         pool += from_swebench(a.hf_swebench, per)
-    if "toolcalls" in want:        pool += from_toolcalls(per)
-    if "local_transcripts" in want: pool += from_local(a.local_glob, per)
-    if "seed" in want or not pool:
+    if "cc_tools" in quota:          pool += from_cc_tools(quota["cc_tools"])
+    if "agentic" in quota:           pool += from_agentic(quota["agentic"])
+    if "debug" in quota:             pool += from_debug(quota["debug"])
+    if "swebench" in quota:          pool += from_swebench(a.hf_swebench, quota["swebench"])
+    if "local_transcripts" in quota: pool += from_local(a.local_glob, quota["local_transcripts"])
+    if "seed" in quota or not pool:
         pool += ["Implement a thread-safe LRU cache in Rust with unit tests.",
-                 "Write a Python function to parse a nested JSON config with validation."] * per
-    random.shuffle(pool)
-    pool = pool[:a.n]
+                 "Write a Python function to parse a nested JSON config with validation."] * quota.get("seed", 50)
+    random.shuffle(pool); pool = pool[:a.n]
+    # dedup while preserving order
+    seen=set(); uniq=[p for p in pool if not (p in seen or seen.add(p))]
     with open(a.out, "w", encoding="utf-8") as f:
-        for p in pool:
-            f.write(json.dumps({"prompt": p}) + "\n")
-    print(f"wrote {len(pool)} prompts -> {a.out}")
-    print("next: 02_teacher_generate.py --prompts", a.out)
+        for p in uniq: f.write(json.dumps({"prompt": p}) + "\n")
+    print(f"wrote {len(uniq)} unique prompts -> {a.out}")
+    print("next: 02_teacher_gguf.py --prompts", a.out)
 
 if __name__ == "__main__":
     main()

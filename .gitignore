@@ -35,3 +35,13 @@ venv/
 # os
 .DS_Store
 Thumbs.db
+
+# logs & external build trees (session-generated)
+*.log
+node/ROCmFPX/
+unsloth_compiled_cache/
+node/unsloth_compiled_cache/
+node_modules/
+package.json
+package-lock.json
+repo_stage/

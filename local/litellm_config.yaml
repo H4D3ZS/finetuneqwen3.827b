@@ -1,0 +1,25 @@
+# LiteLLM gateway: exposes an Anthropic-compatible /v1/messages endpoint (for Claude Code)
+# backed by the local llama-server (OpenAI API). Start with:  litellm --config litellm_config.yaml
+model_list:
+  # PRIMARY: the fast distilled A3B (serve_distilled.sh, alias qwen38-distill-a3b-coder)
+  - model_name: qwen38-distill-a3b-coder
+    litellm_params:
+      model: openai/qwen38-distill-a3b-coder
+      api_base: http://127.0.0.1:8080/v1
+      api_key: sk-local            # llama-server ignores auth; any non-empty value
+      max_tokens: 8192
+  # FALLBACK: the dense 27B (serve_coder.sh, alias qwen38-coder-abliterated) - slower, has vision
+  - model_name: qwen38-coder-abliterated
+    litellm_params:
+      model: openai/qwen38-coder-abliterated
+      api_base: http://127.0.0.1:8080/v1
+      api_key: sk-local
+      max_tokens: 8192
+
+litellm_settings:
+  drop_params: true                # ignore Anthropic-only params llama-server doesn't accept
+  telemetry: false
+
+general_settings:
+  # Claude Code sends whatever ANTHROPIC_AUTH_TOKEN you set; accept any local key.
+  master_key: sk-local

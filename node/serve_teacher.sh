@@ -1,31 +1,31 @@
 #!/usr/bin/env bash
-# Download the abliterated Qwen3.8-27B GGUF (Blackfrost-AI) and serve it via ROCmFPX
-# llama-server (HIP backend) so 02_teacher_gguf.py can generate distillation targets.
-# The teacher is ABLITERATED, so its outputs are uncensored -> the student inherits that.
+# Serve the ABLITERATED Qwen3.8-27B teacher via llama.cpp (HIP/gfx942) as an OpenAI-compatible
+# API on :8081. The teacher runs in its OWN process - there is no shared torch env, so the
+# CUDA-wheel-clobbers-ROCm-torch failure that killed smoke run 1 cannot recur.
 #
-#   bash build_rocmfpx.sh        # once, builds llama-server with HIP (gfx942)
-#   bash serve_teacher.sh &      # downloads Q8_0 + serves on :8080 (background)
-#   # wait for "server is listening", then run 02_teacher_gguf.py
+#   bash serve_teacher.sh          # foreground
+#   bash serve_teacher.sh &        # background, then 02_teacher_gguf.py
 set -euo pipefail
-cd "$(dirname "$0")"
 
-REPO="${TEACHER_REPO:-Blackfrost-AI/Qwen3.8-27B-ABLITERATED-GGUF}"
-FILE="${TEACHER_FILE:-Qwen3.8-27B-ABLITERATED-Q8_0.gguf}"   # near-lossless teacher
-DIR="${SCRATCH:-/scratch/distill}/teacher"
-SERVER="${ROCMFPX_DIR:-$PWD/ROCmFPX}/build/bin/llama-server"
-PORT="${PORT:-8080}"
-NP="${NP:-8}"            # parallel slots = match 02_teacher_gguf.py --concurrency
+GGUF="${GGUF:-/scratch/teacher/Qwen3.8-27B-ABLITERATED-Q8_0.gguf}"
+PORT="${PORT:-8081}"
+CTX="${CTX:-8192}"
+PARALLEL="${PARALLEL:-16}"        # concurrent slots - this is what makes generation cheap
+LCPP="${LCPP:-/root/llama.cpp}"
 
-mkdir -p "$DIR"
-if [ ! -f "$DIR/$FILE" ]; then
-  echo "== downloading $REPO / $FILE (~29GB) to scratch"
-  URL="https://huggingface.co/$REPO/resolve/main/$FILE"
-  curl -L -C - --retry 5 -o "$DIR/$FILE" \
-    ${HF_TOKEN:+-H "Authorization: Bearer $HF_TOKEN"} "$URL"
-fi
+[ -f "$GGUF" ] || { echo "teacher GGUF missing: $GGUF"; exit 1; }
+[ -x "$LCPP/build/bin/llama-server" ] || { echo "llama-server not built at $LCPP"; exit 1; }
 
-[ -x "$SERVER" ] || { echo "llama-server not built. Run: bash build_rocmfpx.sh"; exit 1; }
-echo "== serving abliterated teacher on :$PORT (np=$NP)"
-# --jinja so Qwen3.8's thinking template applies; -ngl 99 = all layers on the MI300X.
-exec "$SERVER" -m "$DIR/$FILE" --alias teacher \
-  -c 8192 -ngl 99 -fa on -np "$NP" --jinja --host 127.0.0.1 --port "$PORT"
+export ROCM_PATH=/opt/rocm-7.2.4
+echo "serving $(basename "$GGUF") on :$PORT  (ctx=$CTX, parallel=$PARALLEL)"
+
+# -np PARALLEL gives PARALLEL concurrent slots; total KV = CTX * PARALLEL, sized for 192GB.
+exec "$LCPP/build/bin/llama-server" \
+  -m "$GGUF" \
+  --host 127.0.0.1 --port "$PORT" \
+  -ngl 99 \
+  -c $((CTX * PARALLEL)) \
+  -np "$PARALLEL" \
+  -fa on \
+  --no-mmap \
+  --alias teacher-abliterated
