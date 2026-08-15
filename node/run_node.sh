@@ -33,16 +33,23 @@ export SCRATCH="${SCRATCH:-/scratch/distill}"
 export ATTN_IMPL="${ATTN_IMPL:-sdpa}"      # safe on ROCm; flash-attn is finicky on gfx942
 mkdir -p "$HF_HOME" "$SCRATCH"
 
-echo "== 0. deps (torch is ALREADY in the ROCm image; add training + serving libs)"
-# Do NOT reinstall torch - the Unsloth/PyTorch ROCm image ships it built. Reinstalling can
-# break the ROCm build. Only add what's missing.
-python3 -c "import torch,sys; sys.exit(0 if torch.cuda.is_available() else 1)" || {
-  echo "  torch/ROCm not usable in this image - you launched the wrong image."; exit 1; }
-pip install -q -U "transformers>=4.44" accelerate datasets peft "trl>=0.11" "bitsandbytes>=0.44" || true
-python3 -c "import unsloth" 2>/dev/null || pip install -q -U unsloth || echo "  (unsloth absent -> 03 uses transformers+peft fallback)"
-# vLLM is COST-CRITICAL for step 2 (67x cheaper than HF).
-python3 -c "import vllm" 2>/dev/null || pip install -q -U vllm || \
-  echo "  WARNING: vLLM missing - step 2 refuses >200 prompts. Use the vLLM ROCm image, or fix before --poc."
+echo "== 0. deps (torch is ALREADY in the ROCm image; DO NOT touch it)"
+# The AMD Unsloth image ships torch 2.x+rocmX. Installing anything that pulls torch (vLLM,
+# unpinned upgrades) drags in a CUDA wheel that CLOBBERS ROCm torch -> torch.cuda.is_available()
+# goes False and nothing sees the GPU. That is exactly what killed the first smoke run.
+# So: (a) NEVER install vLLM here (02 uses batched HF, no vLLM needed on ROCm),
+#     (b) install training libs WITHOUT upgrading torch, (c) re-verify torch after.
+torch_ok() { python3 -c "import torch,sys; sys.exit(0 if torch.cuda.is_available() else 1)"; }
+torch_ok || { echo "  torch/ROCm not usable BEFORE installs - wrong image or env not activated."; exit 1; }
+TORCH_VER="$(python3 -c 'import torch;print(torch.__version__)')"
+echo "  torch pinned at $TORCH_VER (will not be upgraded)"
+# constrain pip so it can NEVER swap torch while adding libs
+pip install -q "transformers>=4.44" accelerate datasets peft "trl>=0.11" "bitsandbytes>=0.44" \
+    "torch==$TORCH_VER" 2>/dev/null || pip install -q "transformers>=4.44" accelerate datasets peft "trl>=0.11" bitsandbytes || true
+python3 -c "import unsloth" 2>/dev/null || echo "  (unsloth not importable -> 03 uses transformers+peft fallback)"
+torch_ok || { echo "  !! torch got CLOBBERED by a dep install (CUDA wheel). Restore ROCm torch:"; \
+  echo "     the image's original was $TORCH_VER - reinstall it from AMD's ROCm index and rerun."; exit 1; }
+echo "  torch still ROCm-good after installs ✓"
 
 python3 - <<'PY'
 import torch

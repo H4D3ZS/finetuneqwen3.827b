@@ -42,7 +42,11 @@ If any fail: stop, fix, do NOT spend the remaining credit on a broken pipeline.
 
 ## 3. RISK REGISTER (ranked by how badly it wastes money/the run)
 
-### R1 [BUDGET-ENDING] Teacher generation must be vLLM-batched, not HF sequential
+### R1 [BUDGET-ENDING] Teacher generation must be BATCHED (not one-at-a-time)
+- **RESOLVED by batched HF**, no vLLM. Plain PyPI vLLM pulls a CUDA torch that clobbers ROCm
+  torch (killed smoke run 1). 02 now does batched HF on the image's ROCm torch: ~$11 for 8k
+  prompts vs $197 sequential vs $3 vLLM. One image, no CUDA wheel. run_node.sh never installs vLLM.
+- Old note below (kept for context):
 - **Impact:** HF `generate()` one-prompt-at-a-time = 98 hr = $197 for the PoC alone. 2.8x
   over the entire budget. This was in the first draft of 02_teacher_generate.py.
 - **Fix:** 02 now uses vLLM (ROCm build) for batched generation -> 1.5 hr = $3. HF path
