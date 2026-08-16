@@ -193,7 +193,7 @@ def convert(a):
 
     g = torch.Generator().manual_seed(0)
     new_tensors, shard_no, cur, cur_bytes = {}, 0, {}, 0
-    SHARD_LIMIT = 4 * 1024**3
+    SHARD_LIMIT = 2 * 1024**3   # 2GB: flush sooner, lower peak RAM (was silently dying at 4GB)
     weight_map = {}
 
     def flush():
