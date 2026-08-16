@@ -1,0 +1,18 @@
+# Force LF on everything that runs on the Linux MI300X. Shell scripts committed with
+# CRLF fail at the shebang ("bad interpreter: /usr/bin/env bash^M"); this repo was
+# authored on Windows, so pin line endings explicitly rather than trust core.autocrlf.
+* text=auto eol=lf
+*.sh   text eol=lf
+*.py   text eol=lf
+*.md   text eol=lf
+*.txt  text eol=lf
+*.json text eol=lf
+*.yml  text eol=lf
+*.yaml text eol=lf
+
+# never touch binary model artifacts
+*.gguf        binary
+*.safetensors binary
+*.bin         binary
+*.pt          binary
+*.pth         binary
