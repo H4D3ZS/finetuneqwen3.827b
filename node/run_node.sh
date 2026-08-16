@@ -46,8 +46,13 @@ torch_ok || { echo "  !! a dep install clobbered ROCm torch. Reinstall $TORCH_VE
 echo "  torch still ROCm-good ✓"
 
 echo "== 1. corpus ($N prompts; add your transcripts at \$SCRATCH/my_transcripts/)"
+# Source names MUST match 01_build_corpus.py's dispatch (cc_tools, cybersec, agentic, debug,
+# swebench, local_transcripts, seed) - "toolcalls" was a typo that silently produced 0 prompts.
+# Weights: cc_tools (general tool-use -> Empero) + cybersec (offensive -> abliterated 27B) are
+# BOTH heavy, so each teacher gets real work and the sensitive/general split is actually balanced.
 python3 01_build_corpus.py --out "$SCRATCH/prompts.jsonl" --n "$N" \
-  --sources swebench,toolcalls,local_transcripts,seed \
+  --sources cc_tools,cybersec,agentic,swebench,debug,local_transcripts,seed \
+  --weights 4,3,2,2,2,2,1 \
   --local_glob "$SCRATCH/my_transcripts/**/*.jsonl"
 
 if [ "$TEACHER_MODE" = "gguf" ]; then

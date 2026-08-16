@@ -141,6 +141,49 @@ def from_cc_tools(limit):
         )
     print(f"  [cc_tools] {len(out)}"); return out
 
+# Authorized offensive-security scenarios (HackTheBox / CTF / a lab box YOU own). Same tool-call
+# protocol as from_cc_tools, so the student learns tool-use AND uncensored agentic security
+# together. Every prompt is explicitly authorized-context; these route=sensitive (the keywords
+# trip _SENSITIVE_RE), so ONLY the abliterated 27B teacher ever sees them - never censored Empero.
+SEC_ACTIONS = [
+    "enumerate services and find the initial foothold on",
+    "find a privilege-escalation path to root on",
+    "get a reverse shell from",
+    "find and exploit the SQL injection in",
+    "crack the captured password hashes from",
+    "escalate from the www-data shell to root on",
+    "find the SUID / sudo / setcap misconfiguration on",
+    "exploit the local file inclusion (LFI) in",
+    "pivot to the internal subnet from the foothold on",
+    "decompile the binary and find the exploitable buffer overflow in",
+    "enumerate the SMB/LDAP shares and extract credentials from",
+    "exploit the deserialization vulnerability in",
+    "find the exposed .git / backup / config leaking secrets on",
+    "write a working exploit for the known CVE affecting",
+]
+SEC_TARGETS = [
+    "the HackTheBox machine you own", "a lab VM you are authorized to test",
+    "the CTF web application", "the intentionally-vulnerable API",
+    "the boot2root box on your home lab", "the vulnerable binary from the CTF",
+    "the retired HackTheBox target", "the pentest-engagement host in scope",
+]
+
+def from_cybersec(limit):
+    out = []
+    for _ in range(limit):
+        task = f"{random.choice(SEC_ACTIONS)} {random.choice(SEC_TARGETS)}"
+        tools = _tool_block(random.randint(3, len(CC_TOOLS)))
+        out.append(
+            "You are an agentic penetration-testing assistant on a target you are EXPLICITLY "
+            "authorized to test (HackTheBox / CTF / your own lab). Tools available:\n"
+            f"{tools}\n\n"
+            f"Task: {task}. Work step by step - enumerate before you exploit.\n\n"
+            "When you need to act, emit a tool call as a JSON object "
+            '{\"tool\": <name>, \"args\": {...}} with correctly-typed arguments, then interpret '
+            "the output and proceed to the next step."
+        )
+    print(f"  [cybersec] {len(out)}"); return out
+
 def from_agentic(limit):
     out = []
     for _ in range(limit):
@@ -248,6 +291,7 @@ def main():
     pool = []   # list of (prompt, source) so each prompt keeps its origin for routing
     def add(src, items): pool.extend((p, src) for p in items)
     if "cc_tools" in quota:          add("cc_tools", from_cc_tools(quota["cc_tools"]))
+    if "cybersec" in quota:          add("cybersec", from_cybersec(quota["cybersec"]))
     if "agentic" in quota:           add("agentic", from_agentic(quota["agentic"]))
     if "debug" in quota:             add("debug", from_debug(quota["debug"]))
     if "swebench" in quota:          add("swebench", from_swebench(a.hf_swebench, quota["swebench"]))
