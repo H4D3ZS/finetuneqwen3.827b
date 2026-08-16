@@ -109,6 +109,29 @@ With that patch the full gfx1200 HIP backend **compiles clean on Windows** (clan
 Use a stable **rc** SDK (7.9.0rc) not the 7.14.0a alpha. Linux is unaffected either way and needs
 no patch. `cmake/rocm_hip_xplatform.cmake` drives both platforms.
 
+
+## RESULT — it works (validated on the RX 9060 XT)
+
+Built the gfx1200 HIP backend fully from scratch (direct-download SDK + hand-built glue +
+math-header patch). `ggml-hip.dll` loads and initializes the device:
+`Device 0: AMD Radeon RX 9060 XT, gfx1200 (0x1200), Wave Size: 32, VRAM 16304 MiB`.
+
+Benchmark (A3B Q2_0_ROCMFPX, raw decode `-n 48`, no MTP):
+
+| backend | tok/s |
+|---|---:|
+| **ROCm/HIP (this build)** | **27.2** |
+| Vulkan (same build) | 18.6 |
+
+**Native ROCm is ~1.46x faster than Vulkan** at raw decode. MTP self-speculation stacks on
+top. Further gains (toward the 2-3x ceiling) need RDNA4-tuned kernels for the ROCMFPX quant
+types (the FP4 WMMA "Phase 2" work) -- the current custom kernels aren't RDNA4-optimized yet.
+
+### Runtime (DLLs)
+The pip SDK's *build* pieces don't include a complete runtime DLL set on Windows; use a full
+TheRock gfx120X runtime on PATH (e.g. lemonade's `.cache/lemonade/bin/therock/gfx120X-*/bin`)
+alongside `build-rdna4/bin`. Then: `llama-bench -m <a3b> -dev ROCm0 -ngl 999`.
+
 ## Honest ceiling
 
 Even a perfect HIP build won't hit 300 on this card sustained — that needs both peak kernel
