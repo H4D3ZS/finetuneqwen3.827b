@@ -60,9 +60,11 @@ def main():
     os.makedirs(a.out, exist_ok=True)
     rows = load_pairs(a.data)
     from datasets import Dataset
-    # SFTTrainer trains on prompt+completion; train_on_responses_only masks the prompt so the
-    # loss is only on the teacher's reasoning+answer (what we want the student to learn).
-    ds = Dataset.from_list([{"text": r["prompt"] + r["completion"]} for r in rows])
+    # Keep prompt/completion SEPARATE so trl (>=0.20) can mask the prompt tokens itself via
+    # SFTConfig(completion_only_loss=True). The old DataCollatorForCompletionOnlyLM was removed
+    # in trl 0.24, and its marker approach would mask nothing here anyway (no chat markers in
+    # the raw text). Loss is computed only on the teacher's reasoning+answer -> what we distill.
+    ds = Dataset.from_list([{"prompt": r["prompt"], "completion": r["completion"]} for r in rows])
 
     model = tok = None
     used = "unsloth"
@@ -114,22 +116,12 @@ def main():
     cfg = SFTConfig(
         output_dir=a.out, per_device_train_batch_size=a.batch,
         gradient_accumulation_steps=a.grad_accum, warmup_steps=a.warmup,
-        num_train_epochs=a.epochs, learning_rate=a.lr, logging_steps=10,
+        num_train_epochs=a.epochs, learning_rate=a.lr, logging_steps=1,
         save_steps=a.save_every, save_total_limit=3, bf16=True,
         optim="adamw_8bit", lr_scheduler_type="cosine", seed=0,
-        max_seq_length=a.seq_len, dataset_text_field="text", report_to="none")
+        max_seq_length=a.seq_len, completion_only_loss=True, report_to="none")
     trainer = SFTTrainer(model=model, tokenizer=tok, train_dataset=ds, args=cfg)
-
-    # mask the prompt: train only on the completion (reasoning + answer)
-    try:
-        from trl import DataCollatorForCompletionOnlyLM  # noqa
-        # Qwen assistant turn starts after this marker; adjust if the template differs.
-        marker = "<|im_start|>assistant\n"
-        from trl import DataCollatorForCompletionOnlyLM as DC
-        trainer.data_collator = DC(marker, tokenizer=tok)
-        print(f"training on responses only (after '{marker.strip()}')")
-    except Exception as e:
-        print(f"response-only masking unavailable ({e}); training on full sequence (still works)")
+    print("training on responses only (completion_only_loss=True; prompt tokens masked)")
 
     trainer.train(resume_from_checkpoint=a.resume)
     # save the merged-ready adapter
