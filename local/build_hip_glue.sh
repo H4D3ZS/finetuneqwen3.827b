@@ -75,6 +75,32 @@ if(NOT TARGET roc::$lib)
 endif()
 EOF
 done
-echo "== glue ready at $GLUE  (pass -DROCM_GLUE_DIR=$GLUE)"
-echo "NOTE: Windows clang HIP + MSVC math-header conflict (isgreater/isless) is still open;"
-echo "      see docs/ROCM_HIP_RDNA4.md. Linux builds do not hit it."
+echo "== 4. patch the clang HIP math headers for the MSVC comparison-fn conflict (Windows)"
+# On Windows, MSVC declares isgreater/isless/... as __host__ __device__ (glibc uses macros, so
+# Linux is immune); clang's HIP math headers redeclare them __device__ -> 'cannot overload'.
+# Guard ONLY the comparison fns (NOT isnan/isinf/etc -- complex_builtins needs those) behind
+# !_MSC_VER; MSVC's host+device versions serve device code. Idempotent (marker-guarded).
+if [ "${OSTYPE:-}" = "msys" ] || [ "${OS:-}" = "Windows_NT" ]; then
+python - "$CORE" <<'PY'
+import re,sys,os,glob
+core=sys.argv[1]
+cd=os.path.dirname(glob.glob(os.path.join(core,"lib/llvm/lib/clang/*/include/__clang_hip_cmath.h"))[0])
+NAMES=r"(isgreater|isgreaterequal|isless|islessequal|islessgreater|isunordered)"
+start=re.compile(r"^\s*__DEVICE__\b.*\bbool\s+"+NAMES+r"\s*\(")
+for fn in ["__clang_hip_cmath.h","__clang_cuda_math_forward_declares.h"]:
+    p=os.path.join(cd,fn); lines=open(p,encoding="utf-8",errors="ignore").read().split("\n")
+    if any("MSVC-HIP-MATH-PATCH" in l for l in lines): print(f"  {fn}: already patched"); continue
+    out=[]; i=0; n=len(lines); k=0
+    while i<n:
+        if start.match(lines[i]):
+            blk=[lines[i]]; i+=1
+            if not blk[0].rstrip().endswith(";"):
+                while i<n:
+                    blk.append(lines[i]); done=lines[i].rstrip().endswith("}"); i+=1
+                    if done: break
+            out+=["#if !defined(_MSC_VER) // MSVC-HIP-MATH-PATCH"]+blk+["#endif"]; k+=1
+        else: out.append(lines[i]); i+=1
+    open(p,"w",encoding="utf-8").write("\n".join(out)); print(f"  {fn}: guarded {k} comparison blocks")
+PY
+fi
+echo "== glue ready at $GLUE  (pass -DROCM_GLUE_DIR=$GLUE). Windows math conflict PATCHED."

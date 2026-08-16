@@ -98,15 +98,16 @@ mismatched build loads a model then **segfaults** (documented in the fork's
   -include __clang_hip_runtime_wrapper.h -isystem <clang>/cuda_wrappers --hip-device-lib-path`.
   With these, **the gfx1200 device code compiles** (device builtins resolve).
 
-**Blocked on Windows (open):** clang HIP + MSVC math-header conflict —
-`__clang_hip_cmath.h` / `__clang_cuda_math_forward_declares.h` redeclare `isgreater`/`isless`/…
-as `__device__`, conflicting with MSVC UCRT's `__host__ __device__` versions. Reproduced on
-**both clang 20 (7.9.0rc) and clang 23 (7.14.0a)** → it's systemic, not a version regression.
-Linux is immune (glibc declares these as macros, not functions).
+**PATCHED (Windows now builds):** the last blocker was a clang HIP + MSVC math-header conflict —
+`__clang_hip_cmath.h` / `__clang_cuda_math_forward_declares.h` redeclare `isgreater`/`isless`/`isunordered`
+as `__device__`, conflicting with MSVC UCRT's `__host__ __device__` versions (Linux is immune —
+glibc uses macros). **Fix:** `local/build_hip_glue.sh` step 4 guards *only* the comparison
+functions behind `#if !defined(_MSC_VER)` (MSVC's host+device versions serve device code; the
+classifiers `isnan`/`isinf`/… are left intact — `__clang_cuda_complex_builtins.h` needs them).
+With that patch the full gfx1200 HIP backend **compiles clean on Windows** (clang 20, ROCm 7.9.0rc).
 
-**Paths to finish Windows:** (a) patch/upstream the clang HIP math headers for MSVC; (b) use
-the official AMD HIP SDK for Windows (different MSVC handling); (c) **build on Linux/WSL2**,
-where `cmake/rocm_hip_xplatform.cmake` works unmodified (system ROCm or the same pip SDK).
+Use a stable **rc** SDK (7.9.0rc) not the 7.14.0a alpha. Linux is unaffected either way and needs
+no patch. `cmake/rocm_hip_xplatform.cmake` drives both platforms.
 
 ## Honest ceiling
 
