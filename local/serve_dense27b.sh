@@ -22,7 +22,12 @@ CTX="${CTX:-16384}"   # 11.7GB weights leave ~4GB; hybrid attn (16 full layers) 
 [ -x "$SERVER" ] || { echo "no ROCmFPX llama-server at $SERVER"; exit 1; }
 [ -f "$GGUF" ]   || { echo "no GGUF at $GGUF"; exit 1; }
 
+# reasoning_effort: Qwen3.8-27B defaults to 'xhigh' (over-thinks, burns token budget before
+# answering). 'medium' keeps the reasoning quality with far fewer thinking tokens -> much
+# faster useful output. Supported: xhigh|medium|low. Override with REASONING_EFFORT=low.
+EFFORT="${REASONING_EFFORT:-medium}"
 exec "$SERVER" -m "$GGUF" --alias qwen38-27b \
   -c "$CTX" -fa on -ctk q8_0 -ctv q8_0 -ngl 99 -np 1 --no-mmap \
-  --jinja --reasoning-budget 0 --repeat-penalty 1.1 \
+  --jinja --repeat-penalty 1.1 \
+  --chat-template-kwargs "{\"reasoning_effort\":\"$EFFORT\"}" \
   --port 8080
