@@ -53,15 +53,33 @@ python3 01_build_corpus.py --out "$SCRATCH/prompts.jsonl" --n "$N" \
 if [ "$TEACHER_MODE" = "gguf" ]; then
   echo "== 2a. build ROCmFPX (HIP) if needed, and serve the ABLITERATED teacher GGUF"
   [ -x "ROCmFPX/build/bin/llama-server" ] || bash build_rocmfpx.sh
+  # serve_teacher.sh does NOT download and defaults LCPP=/root/llama.cpp. Point it at the
+  # fork we just built and provision the abliterated Q8_0 (Blackfrost-AI) here if missing.
+  export LCPP="${LCPP:-$PWD/ROCmFPX}"
+  export GGUF="${GGUF:-/scratch/teacher/Qwen3.8-27B-ABLITERATED-Q8_0.gguf}"
+  if [ ! -f "$GGUF" ]; then
+    echo "  downloading abliterated teacher (Blackfrost-AI, Q8_0) -> $(dirname "$GGUF")"
+    mkdir -p "$(dirname "$GGUF")"
+    # 'hf' is the current huggingface_hub CLI (Unsloth image); swap to 'huggingface-cli' if absent.
+    hf download Blackfrost-AI/Qwen3.8-27B-ABLITERATED-GGUF --include "*Q8_0*.gguf" \
+      --local-dir "$(dirname "$GGUF")" || \
+    huggingface-cli download Blackfrost-AI/Qwen3.8-27B-ABLITERATED-GGUF --include "*Q8_0*.gguf" \
+      --local-dir "$(dirname "$GGUF")"
+    found="$(ls "$(dirname "$GGUF")"/*Q8_0*.gguf 2>/dev/null | head -1)"
+    [ -n "$found" ] || { echo "  teacher download failed - check repo/filename"; exit 1; }
+    [ "$found" = "$GGUF" ] || ln -sf "$found" "$GGUF"
+  fi
   # serve in the background; wait for health
   ( bash serve_teacher.sh >"$SCRATCH/teacher-serve.log" 2>&1 & echo $! >"$SCRATCH/teacher.pid" )
   echo "  waiting for teacher /health ..."
+  # serve_teacher.sh serves on :8081 (PORT default); poll and call THAT port. The
+  # 02_teacher_gguf.py arg is --url and wants the FULL chat/completions endpoint.
   for _ in $(seq 1 300); do
-    curl -sf -m 3 http://127.0.0.1:8080/health >/dev/null 2>&1 && break; sleep 5; done
-  curl -sf -m 3 http://127.0.0.1:8080/health >/dev/null 2>&1 || { echo "  teacher didn't come up - see $SCRATCH/teacher-serve.log"; exit 1; }
+    curl -sf -m 3 http://127.0.0.1:8081/health >/dev/null 2>&1 && break; sleep 5; done
+  curl -sf -m 3 http://127.0.0.1:8081/health >/dev/null 2>&1 || { echo "  teacher didn't come up - see $SCRATCH/teacher-serve.log"; exit 1; }
 
   echo "== 2b. teacher generates targets via API (abliterated, thinking on)"
-  python3 02_teacher_gguf.py --base-url http://127.0.0.1:8080 \
+  python3 02_teacher_gguf.py --url http://127.0.0.1:8081/v1/chat/completions \
     --prompts "$SCRATCH/prompts.jsonl" --out "$SCRATCH/teacher_data/" --n "$N" \
     --concurrency "$CONC" --think
 
