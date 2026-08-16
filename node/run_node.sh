@@ -78,14 +78,36 @@ if [ "$TEACHER_MODE" = "gguf" ]; then
     curl -sf -m 3 http://127.0.0.1:8081/health >/dev/null 2>&1 && break; sleep 5; done
   curl -sf -m 3 http://127.0.0.1:8081/health >/dev/null 2>&1 || { echo "  teacher didn't come up - see $SCRATCH/teacher-serve.log"; exit 1; }
 
-  echo "== 2b. teacher generates targets via API (abliterated, thinking on)"
+  # Two-teacher routing (see serve_empero.sh + 01_build_corpus.py route= tags). With Empero ON,
+  # the abliterated 27B teaches only the SENSITIVE slice (its uncensored differentiator) and
+  # Empero teaches GENERAL; with Empero OFF it must teach ALL, or the general half gets no targets.
+  USE_EMPERO="${USE_EMPERO:-1}"
+  ABL_ROUTE="all"; [ "$USE_EMPERO" = "1" ] && ABL_ROUTE="sensitive"
+
+  echo "== 2b. abliterated 27B teaches the $ABL_ROUTE slice (thinking on)"
   python3 02_teacher_gguf.py --url http://127.0.0.1:8081/v1/chat/completions \
     --prompts "$SCRATCH/prompts.jsonl" --out "$SCRATCH/teacher_data/" --n "$N" \
-    --concurrency "$CONC" --think
+    --concurrency "$CONC" --think --route "$ABL_ROUTE"
 
-  # free the teacher's VRAM before training the student
+  # free the teacher's VRAM before the next stage
   kill "$(cat "$SCRATCH/teacher.pid" 2>/dev/null)" 2>/dev/null || true
   pkill -f llama-server 2>/dev/null || true; sleep 3
+
+  if [ "$USE_EMPERO" = "1" ]; then
+    echo "== 2c. Empero 9B teaches the GENERAL slice (Apache-2.0, frontier-distilled; censored -> general ONLY)"
+    # serve_empero.sh builds stock llama.cpp (DeltaNet) + downloads Empero Q8_0 on first run.
+    ( bash serve_empero.sh >"$SCRATCH/empero-serve.log" 2>&1 & echo $! >"$SCRATCH/empero.pid" )
+    echo "  waiting for Empero /health on :8082 (first run builds llama.cpp + downloads ~10GB) ..."
+    for _ in $(seq 1 600); do
+      curl -sf -m 3 http://127.0.0.1:8082/health >/dev/null 2>&1 && break; sleep 5; done
+    curl -sf -m 3 http://127.0.0.1:8082/health >/dev/null 2>&1 || { echo "  Empero didn't come up - see $SCRATCH/empero-serve.log"; exit 1; }
+    # write INTO teacher_data/empero/ so 03_unsloth_sft.py's recursive load merges both teachers.
+    python3 02_teacher_gguf.py --url http://127.0.0.1:8082/v1/chat/completions \
+      --prompts "$SCRATCH/prompts.jsonl" --out "$SCRATCH/teacher_data/empero/" --n "$N" \
+      --concurrency "$CONC" --think --route general
+    kill "$(cat "$SCRATCH/empero.pid" 2>/dev/null)" 2>/dev/null || true
+    pkill -f llama-server 2>/dev/null || true; sleep 3
+  fi
 else
   echo "== 2. base 3.8 teacher via batched HF (you will abliterate LOCALLY afterward)"
   python3 02_teacher_generate.py --teacher "$TEACHER_HF" --prompts "$SCRATCH/prompts.jsonl" \

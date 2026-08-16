@@ -9,11 +9,34 @@ toy scale. If it passes, the only thing that changes at scale is `N` and `EPOCHS
 
 ```bash
 cd ~/finetuneqwen3.827b/node
-bash run_node.sh --smoke        # N=50, EPOCHS=1, CONC=4, TEACHER_MODE=gguf (abliterated)
+bash run_node.sh --smoke        # N=50, EPOCHS=1, CONC=4, TEACHER_MODE=gguf, USE_EMPERO=1
 ```
 
-That's it. It builds the ROCmFPX fork (HIP/gfx942) if needed, downloads + serves the
-abliterated teacher, generates targets, distills into the A3B student, merges, and evals.
+That's it. It builds the ROCmFPX fork (HIP/gfx942), serves the abliterated teacher, generates
+targets, **also** runs the Empero teacher on the general slice, distills the merged data into
+the A3B student, merges, and evals.
+
+## Two-teacher blend (why there are two teacher passes)
+
+The student learns from **two** teachers, split by prompt sensitivity (tagged `route=` by
+`01_build_corpus.py`):
+
+- **Abliterated Qwen3.8-27B** (`serve_teacher.sh`, :8081) → the **sensitive** slice
+  (offensive-security / agentic / cybersec). Uncensored — this is the differentiator.
+- **Empero Qwen3.8-9B** (`serve_empero.sh`, :8082) → the **general** slice (math/code/reasoning).
+  Apache-2.0, distilled from the 2.4T-A95B frontier teacher. It is **censored**, so it *only*
+  ever sees `general` prompts — never an offensive one, or its refusals would re-poison the
+  compliance we distil from the abliterated teacher.
+
+Both teacher sets land under `teacher_data/` (Empero in `teacher_data/empero/`) and the SFT step
+merges them automatically. **Turn Empero off** with `USE_EMPERO=0 bash run_node.sh --smoke` —
+then the abliterated teacher covers `--route all` so the general half still gets targets.
+
+> **First run is heavier than the $5 tag.** With `USE_EMPERO=1`, the *first* run builds **two**
+> llama.cpp trees (the fork for the 27B, **plus stock master** for Empero — its Qwen3.5 Gated
+> DeltaNet arch will NOT load on the fork) and downloads **two** GGUFs (~29GB + ~10GB). Budget
+> extra time/credit for that once; subsequent runs reuse both. Want a fast first shakedown?
+> `USE_EMPERO=0 bash run_node.sh --smoke` validates the core path, then flip Empero on for `--poc`.
 
 ## What must be true before you start
 

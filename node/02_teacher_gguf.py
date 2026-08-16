@@ -33,20 +33,28 @@ def parse():
     p.add_argument("--top_p", type=float, default=0.95)
     p.add_argument("--shard", type=int, default=2000)
     p.add_argument("--think", action="store_true", help="keep the teacher's reasoning block")
+    p.add_argument("--route", default="all", choices=["all", "sensitive", "general"],
+                   help="only generate for prompts with this route tag (teacher routing). The "
+                        "abliterated teacher uses 'sensitive' (or 'all'); the censored Empero "
+                        "teacher MUST use 'general' so it never sees an offensive-security prompt.")
     p.add_argument("--concurrency", type=int, default=16,
                    help="match serve_teacher.sh PARALLEL")
     p.add_argument("--timeout", type=int, default=900)
     return p.parse_args()
 
 
-def load_prompts(path, n):
+def load_prompts(path, n, route="all"):
     out = []
     with open(path, encoding="utf-8") as f:
         for line in f:
             line = line.strip()
             if not line:
                 continue
-            out.append(json.loads(line)["prompt"])
+            obj = json.loads(line)
+            # route defaults to 'general' when absent so an untagged corpus stays Empero-safe
+            if route != "all" and obj.get("route", "general") != route:
+                continue
+            out.append(obj["prompt"])
             if len(out) >= n:
                 break
     return out
@@ -105,7 +113,7 @@ def load_done_prompts(out_dir):
 
 def main():
     a = parse()
-    prompts = load_prompts(a.prompts, a.n)
+    prompts = load_prompts(a.prompts, a.n, a.route)
     os.makedirs(a.out, exist_ok=True)
     # RESUME + CRASH-SAFETY: skip prompts already in stream.jsonl, append new ones as they land.
     # Killing this process at ANY point keeps every completion written so far (fixes the

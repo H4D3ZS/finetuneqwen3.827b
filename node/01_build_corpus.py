@@ -43,6 +43,25 @@ def _scrub(s):
     """Redact secrets scraped from real transcripts so the student can't memorize them."""
     return _SECRET_RE.sub("<REDACTED>", s)
 
+# --- teacher routing: keep the CENSORED Empero teacher away from offensive-security prompts ---
+# The abliterated 27B is the SOLE teacher for anything offensive; Empero (not abliterated, would
+# refuse and re-poison compliance) only ever sees "general" prompts. Match clearly-offensive
+# tokens only - NOT bare "security" (so the benign "Harden the security of ..." task stays general).
+_SENSITIVE_RE = re.compile(r"""(?ix)
+    \b(exploit|payload|shellcode|reverse[\s-]?shell|privilege[\s-]?escalation|priv[\s-]?esc
+    |rce|remote[\s-]code[\s-]execution|lfi|rfi|sqli|sql[\s-]injection|xss|csrf[\s-]bypass
+    |malware|ransomware|keylogger|rootkit|backdoor|botnet|\bc2\b|command[\s-]and[\s-]control
+    |metasploit|msfvenom|cobalt[\s-]strike|mimikatz|hashcat|hydra|\bnmap\b|\bburp\b|sqlmap
+    |crack(ing|ed|\s+the)?[\s-]?(password|hash|key)?|keygen|crackme|bypass[\s-]auth\w*
+    |deobfuscat|decompil|disassembl|ghidra|ida[\s-]pro|\bctf\b|hack[\s-]?the[\s-]?box|\bhtb\b
+    |vulnerab\w+|\bcve-|buffer[\s-]overflow|heap[\s-]spray|rop[\s-]chain|dll[\s-]inject\w*)\b
+""")
+def route_for(prompt, source):
+    """'sensitive' -> abliterated 27B only; 'general' -> Empero-eligible."""
+    if source == "local_transcripts":          # your private HTB/RE sessions: always sensitive
+        return "sensitive"
+    return "sensitive" if _SENSITIVE_RE.search(prompt) else "general"
+
 def from_hf_instruct(limit):
     try:
         from datasets import load_dataset
@@ -226,22 +245,29 @@ def main():
     weights = (weights + [1]*len(want))[:len(want)]
     tot = sum(weights)
     quota = {s: max(1, a.n * w // tot) for s, w in zip(want, weights)}
-    pool = []
-    if "cc_tools" in quota:          pool += from_cc_tools(quota["cc_tools"])
-    if "agentic" in quota:           pool += from_agentic(quota["agentic"])
-    if "debug" in quota:             pool += from_debug(quota["debug"])
-    if "swebench" in quota:          pool += from_swebench(a.hf_swebench, quota["swebench"])
-    if "instruct" in quota:          pool += from_hf_instruct(quota["instruct"])
-    if "local_transcripts" in quota: pool += from_local(a.local_glob, quota["local_transcripts"])
+    pool = []   # list of (prompt, source) so each prompt keeps its origin for routing
+    def add(src, items): pool.extend((p, src) for p in items)
+    if "cc_tools" in quota:          add("cc_tools", from_cc_tools(quota["cc_tools"]))
+    if "agentic" in quota:           add("agentic", from_agentic(quota["agentic"]))
+    if "debug" in quota:             add("debug", from_debug(quota["debug"]))
+    if "swebench" in quota:          add("swebench", from_swebench(a.hf_swebench, quota["swebench"]))
+    if "instruct" in quota:          add("instruct", from_hf_instruct(quota["instruct"]))
+    if "local_transcripts" in quota: add("local_transcripts", from_local(a.local_glob, quota["local_transcripts"]))
     if "seed" in quota or not pool:
-        pool += ["Implement a thread-safe LRU cache in Rust with unit tests.",
-                 "Write a Python function to parse a nested JSON config with validation."] * quota.get("seed", 50)
+        add("seed", ["Implement a thread-safe LRU cache in Rust with unit tests.",
+                     "Write a Python function to parse a nested JSON config with validation."] * quota.get("seed", 50))
     random.shuffle(pool); pool = pool[:a.n]
-    # dedup while preserving order
-    seen=set(); uniq=[p for p in pool if not (p in seen or seen.add(p))]
+    # dedup on prompt text while preserving order
+    seen=set(); uniq=[(p, s) for (p, s) in pool if not (p in seen or seen.add(p))]
+    n_sens = 0
     with open(a.out, "w", encoding="utf-8") as f:
-        for p in uniq: f.write(json.dumps({"prompt": _scrub(p)}) + "\n")   # redact any scraped secrets
-    print(f"wrote {len(uniq)} unique prompts -> {a.out}")
+        for p, s in uniq:
+            p = _scrub(p)                       # redact any scraped secrets FIRST
+            route = route_for(p, s)             # then classify the scrubbed text
+            n_sens += route == "sensitive"
+            f.write(json.dumps({"prompt": p, "route": route}) + "\n")
+    print(f"wrote {len(uniq)} unique prompts -> {a.out} "
+          f"({n_sens} sensitive -> abliterated 27B only, {len(uniq)-n_sens} general -> Empero-eligible)")
     print("next: 02_teacher_gguf.py --prompts", a.out)
 
 if __name__ == "__main__":
