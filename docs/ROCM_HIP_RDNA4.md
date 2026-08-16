@@ -84,6 +84,30 @@ mismatched build loads a model then **segfaults** (documented in the fork's
   matrix cores (wave32, gfx12 WMMA intrinsics) is the real kernel engineering to push past
   200 — a genuine open contribution.
 
+## Build status & the Windows blocker (as of this session)
+
+**Solved (all captured in `cmake/rocm_hip_xplatform.cmake` + the glue):**
+- Direct-download prebuilt gfx1200 ROCm SDK via `pip install rocm[devel,libraries]` from
+  `https://rocm.nightlies.amd.com/v2/gfx120X-all/` (no multi-hour source build).
+- The SDK omits CMake `find_package` configs → **hand-built glue**: import libs generated
+  from the runtime DLLs (`rocblas.lib`/`hipblas.lib` via `dumpbin`+`lib`), headers fetched
+  from `ROCm/rocm-libraries` (+ `hipblas-common`), generated `*-export/-version.h`, and
+  `hip/rocblas/hipblas` config packages. `find_package(hip/rocblas/hipblas)` → **configure OK**.
+- On Windows the fork forces `CXX_IS_HIPCC` (compiles `.cu` as LANGUAGE CXX), so the HIP flags
+  must ride on `hip::device`: `-x hip --offload-arch=gfx1200 -fhip-new-launch-api
+  -include __clang_hip_runtime_wrapper.h -isystem <clang>/cuda_wrappers --hip-device-lib-path`.
+  With these, **the gfx1200 device code compiles** (device builtins resolve).
+
+**Blocked on Windows (open):** clang HIP + MSVC math-header conflict —
+`__clang_hip_cmath.h` / `__clang_cuda_math_forward_declares.h` redeclare `isgreater`/`isless`/…
+as `__device__`, conflicting with MSVC UCRT's `__host__ __device__` versions. Reproduced on
+**both clang 20 (7.9.0rc) and clang 23 (7.14.0a)** → it's systemic, not a version regression.
+Linux is immune (glibc declares these as macros, not functions).
+
+**Paths to finish Windows:** (a) patch/upstream the clang HIP math headers for MSVC; (b) use
+the official AMD HIP SDK for Windows (different MSVC handling); (c) **build on Linux/WSL2**,
+where `cmake/rocm_hip_xplatform.cmake` works unmodified (system ROCm or the same pip SDK).
+
 ## Honest ceiling
 
 Even a perfect HIP build won't hit 300 on this card sustained — that needs both peak kernel
