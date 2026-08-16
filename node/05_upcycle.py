@@ -48,8 +48,9 @@ def parse():
     p.add_argument("--topk", type=int, default=8)
     p.add_argument("--shared-intermediate", type=int, default=272,
                    help="shared-expert FFN width; random-init, learned residual path")
-    p.add_argument("--drop-vision", action="store_true", default=True,
-                   help="skip the vision tower (targeting a text coder)")
+    p.add_argument("--drop-vision", action="store_true",
+                   help="drop the vision tower (default: KEEP it, matching the known-good "
+                        "escha W2 MoE-VLM structure; vision is ~0.5GB, droppable at quant time)")
     p.add_argument("--cluster", choices=["none", "coactivation"], default="none",
                    help="R-U2: neuron grouping before slicing. 'none' = contiguous (WARNS).")
     p.add_argument("--cluster-acts", help="path to saved per-layer FFN activation stats for --cluster coactivation")
@@ -68,13 +69,27 @@ def parse():
 # shared expert:       model.layers.{L}.mlp.shared_expert.{gate,up,down}_proj.weight  (random)
 #                      model.layers.{L}.mlp.shared_expert_gate.weight  [1, H]  (random)
 def is_ffn(name):
-    return ".mlp." in name and name.endswith(("gate_proj.weight", "up_proj.weight", "down_proj.weight")) \
-        and ".experts." not in name and ".shared_expert" not in name
+    # Only the LANGUAGE tower's dense FFN gets split into experts. The real dense Qwen3.8-27B
+    # is a VLM: language layers live under `model.language_model.layers.*`, and the vision
+    # tower (`visual.*`) has its own MLPs that must NOT be touched -> require language_model.
+    return (".language_model." in name and ".mlp." in name
+            and name.endswith(("gate_proj.weight", "up_proj.weight", "down_proj.weight"))
+            and ".experts." not in name and ".shared_expert" not in name)
 
 
 def layer_of(name):
-    # model.layers.{L}.mlp.gate_proj.weight -> L
+    # ...language_model.layers.{L}.mlp.gate_proj.weight -> L
     return name.split(".layers.")[1].split(".")[0]
+
+
+def mlp_prefix_map(idx):
+    # Prefix-agnostic: derive each layer's real `...mlp` prefix from the actual tensor names
+    # (e.g. model.language_model.layers.7.mlp) rather than hardcoding model.layers.*.
+    pm = {}
+    for k in idx:
+        if is_ffn(k) and k.endswith(".gate_proj.weight"):
+            pm[layer_of(k)] = k[: -len(".gate_proj.weight")]
+    return pm
 
 
 def build_index(src):
@@ -123,26 +138,37 @@ def reconstruct(gate_up, down_e):
 
 
 def make_moe_config(src, a):
+    # The real dense Qwen3.8-27B is a VLM: text params are nested under `text_config`, and it
+    # loads as Qwen3_5ForConditionalGeneration. We mirror the KNOWN-GOOD structure of a working
+    # qwen3_5 MoE VLM (EschaLabs/Qwen3.6-35B-A3B-Escha-W2): Qwen3_5MoeForConditionalGeneration
+    # with MoE params in text_config and the vision tower kept intact. (Vision is ~0.5GB and can
+    # be dropped later at quant time; keeping it maximizes the chance the checkpoint loads.)
     cfg = json.load(open(os.path.join(src, "config.json")))
-    H = cfg["hidden_size"]; I = cfg["intermediate_size"]
+    tc = dict(cfg.get("text_config") or cfg)      # VLM nests text config; fall back to flat
+    H = tc["hidden_size"]; I = tc["intermediate_size"]
     m = I // a.experts
-    # Map the dense class id to its MoE sibling. The base Qwen3.8-27B is stamped
-    # `qwen3_5_text`; its MoE form is `qwen3_5_moe_text` (Qwen's own class line for the 3.8
-    # product). Keep it -- it must match the registered modeling class to load.
-    base_mt = cfg.get("model_type", "qwen3_5_text")
-    cfg["model_type"] = base_mt.replace("_text", "_moe_text") if "moe" not in base_mt else base_mt
-    cfg["architectures"] = ["Qwen3_5MoeForCausalLM"]
-    cfg["num_experts"] = a.experts
-    cfg["num_experts_per_tok"] = a.topk
-    cfg["moe_intermediate_size"] = m
-    cfg["shared_expert_intermediate_size"] = a.shared_intermediate
-    cfg["router_aux_loss_coef"] = 0.001
-    cfg["output_router_logits"] = False
-    cfg["mtp_num_hidden_layers"] = 1              # trained later, Phase 3
-    cfg.pop("intermediate_size", None)
-    if a.drop_vision:
-        for k in ("vision_config", "image_token_id", "video_token_id"):
-            cfg.pop(k, None)
+    base_mt = tc.get("model_type", "qwen3_5_text")
+    tc["model_type"] = base_mt.replace("_text", "_moe_text") if "moe" not in base_mt else base_mt
+    tc["num_experts"] = a.experts
+    tc["num_experts_per_tok"] = a.topk
+    tc["moe_intermediate_size"] = m
+    tc["shared_expert_intermediate_size"] = a.shared_intermediate
+    tc["router_aux_loss_coef"] = 0.001
+    tc["output_router_logits"] = False
+    tc["mtp_num_hidden_layers"] = 1               # trained later, Phase 3
+    tc.pop("intermediate_size", None)
+    if "text_config" in cfg:
+        cfg["text_config"] = tc
+        cfg["architectures"] = ["Qwen3_5MoeForConditionalGeneration"]
+        if a.drop_vision:
+            for k in ("vision_config", "image_token_id", "video_token_id"):
+                cfg.pop(k, None)
+            cfg["architectures"] = ["Qwen3_5MoeForCausalLM"]
+    else:                                          # flat (non-VLM) fallback
+        cfg = tc; cfg["architectures"] = ["Qwen3_5MoeForCausalLM"]
+        cfg["model_type"] = tc["model_type"]
+    # NOTE: exact arch/config conventions are validated at Gate 0b (forward pass on the node
+    # with real transformers). Gate 0a here only asserts the FFN expert tiling is bit-exact.
     return cfg, H, m
 
 
@@ -158,7 +184,11 @@ def convert(a):
     order_by_layer = load_cluster_order(a) if a.cluster == "coactivation" else {}
 
     idx, _ = build_index(a.src)
-    ffn_layers = sorted({layer_of(k) for k in idx if is_ffn(k)}, key=int)
+    pmap = mlp_prefix_map(idx)                     # layer -> real "...mlp" prefix (VLM-safe)
+    ffn_layers = sorted(pmap.keys(), key=int)
+    if not ffn_layers:
+        sys.exit("no language-tower FFN tensors found (is_ffn matched nothing). Check the "
+                 "checkpoint's tensor naming; expected ...language_model.layers.N.mlp.*_proj.weight")
     print(f"{len(ffn_layers)} FFN layers -> {E} experts of width {m} (top-{a.topk}) each")
 
     g = torch.Generator().manual_seed(0)
@@ -196,7 +226,7 @@ def convert(a):
         emit(name, read(name))   # attention, norms, embeddings, output head -> copied verbatim
 
     for L in ffn_layers:
-        pre = f"model.layers.{L}.mlp"
+        pre = pmap[L]                              # e.g. model.language_model.layers.7.mlp
         gate = read(f"{pre}.gate_proj.weight")
         up = read(f"{pre}.up_proj.weight")
         down = read(f"{pre}.down_proj.weight")
@@ -251,10 +281,11 @@ def verify(a):
     """Re-open OUT and assert every FFN reconstructs bit-exactly from the source (R-U5)."""
     sidx, _ = build_index(a.src)
     oidx, _ = build_index(a.out)
-    ffn_layers = sorted({layer_of(k) for k in sidx if is_ffn(k)}, key=int)
+    pmap = mlp_prefix_map(sidx)
+    ffn_layers = sorted(pmap.keys(), key=int)
     ok = 0
     for L in ffn_layers:
-        pre = f"model.layers.{L}.mlp"
+        pre = pmap[L]
         with safe_open(oidx[f"{pre}.experts.gate_up_proj"], framework="pt") as sf:
             gate_up = sf.get_tensor(f"{pre}.experts.gate_up_proj")
         with safe_open(oidx[f"{pre}.experts.down_proj"], framework="pt") as sf:
