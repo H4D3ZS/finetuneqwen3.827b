@@ -1,4 +1,35 @@
-# finetuneqwen3.827b — distill an ABLITERATED Qwen3.8-27B into a fast local A3B
+# finetuneqwen3.827b — a fast local coder from one Qwen3.8-27B base
+
+**Goal:** a fast, local coding model on the RX 9060 XT (16GB) that *learns from frontier
+teachers* — not a frontier model itself (a ~3B-active model imitates frontier coding, it does
+not become frontier), but a genuinely strong fast coder distilled from real frontier output.
+
+## ▶ CURRENT DIRECTION (2026-08, supersedes the older sections below)
+
+**One base — `Qwen/Qwen3.8-27B` (dense) — two products from it:**
+
+1. **Quantized dense 27B ≤16GB** — the daily driver. Best today: GDN-aware
+   `Qwen3.8-27B-Ridge-3.7bpw` (11.7GB, coherent, vision), ~9 tok/s (bandwidth wall).
+2. **Own MoE MTP A3B "escha"** — sparse-upcycle the dense 27B → ~3B-active MoE
+   (`node/05_upcycle.py`), escha-class speed, then specialize on a frontier-distilled corpus.
+
+**Corpus (frontier-distilled, all free via Qwen ambassador API):** a ~5.2k **Qwen3.8-Max**
+frontier seed + bulk from **Qwen3.7-Plus** (`node/02b_teacher_api.py`, quota-guarded, gentle).
+
+**Speed track (the real 150-200 tok/s lever):** run the finished A3B on native **ROCm/HIP**
+(gfx1200) instead of Vulkan — a ~2-3× bandwidth-efficiency jump. See
+[`docs/ROCM_HIP_RDNA4.md`](docs/ROCM_HIP_RDNA4.md) and `local/build_hip_rdna4_windows.ps1`.
+
+**Read these, in order:**
+[`RUNBOOK.md`](RUNBOOK.md) (end-to-end current plan) ·
+[`MOE_UPCYCLE_PLAN.md`](MOE_UPCYCLE_PLAN.md) (dense→MoE + the bandwidth physics) ·
+[`docs/ROCM_HIP_RDNA4.md`](docs/ROCM_HIP_RDNA4.md) (the speed backend).
+
+*The sections below describe the earlier distill-into-3.6-A3B design and are kept for history.*
+
+---
+
+<details><summary>Earlier design (historical): distill an abliterated Qwen3.8-27B into 3.6-A3B</summary>
 
 **Goal:** one local model on the RX 9060 XT (16GB) that codes like Qwen3.8-27B (which beats
 Opus 4.6 on SWE-bench Pro / QwenSWEBench / IFBench), runs at MoE speed (~40-120 tok/s),
@@ -88,3 +119,5 @@ jump (25-64 → 40-120). Decide before spending.
 - `reference/reference-MTP-and-cliff-findings.md` — measured ROCmFPX MTP/quant findings and
   the hardware laws (why only uniform 2-bit is fast on the 9060 XT).
 - ROCmFPX is a pinned submodule (`charlie12345/ROCmFPX @ b2f5829`); models are gitignored.
+
+</details>
