@@ -38,16 +38,21 @@ def parse():
     return p.parse_args()
 
 def load_pairs(data_dir):
-    rows = []
-    for fn in glob.glob(os.path.join(data_dir, "*.jsonl")):
+    # Recursive so --data can point at a parent (e.g. node/) and gather every teacher_* dir's
+    # shards at once (teacher_seed_max/ + teacher_bulk_235b/). Extra fields like {id} are fine.
+    rows, files = [], sorted(set(
+        glob.glob(os.path.join(data_dir, "*.jsonl")) +
+        glob.glob(os.path.join(data_dir, "**", "*.jsonl"), recursive=True)))
+    for fn in files:
         with open(fn, encoding="utf-8") as f:
             for line in f:
-                r = json.loads(line)
+                try: r = json.loads(line)
+                except Exception: continue
                 if r.get("prompt") and r.get("completion"):
                     rows.append(r)
     if not rows:
-        raise SystemExit(f"no {{prompt,completion}} rows in {data_dir}. Run step 2 first.")
-    print(f"{len(rows)} training pairs")
+        raise SystemExit(f"no {{prompt,completion}} rows under {data_dir}. Run step 2/2b first.")
+    print(f"{len(rows)} training pairs from {len(files)} shard files")
     return rows
 
 def main():
