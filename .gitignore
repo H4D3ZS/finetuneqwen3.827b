@@ -19,6 +19,10 @@ node/prompts*.jsonl
 teacher_data/
 teacher_data*/
 node/teacher_data*/
+teacher_seed*/
+teacher_bulk*/
+node/teacher_seed*/
+node/teacher_bulk*/
 my_transcripts/
 my_transcripts.tgz
 offload/

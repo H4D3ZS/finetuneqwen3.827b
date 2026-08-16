@@ -44,6 +44,38 @@ def parse():
     p.add_argument("--seed", type=int, default=0)
     return p.parse_args()
 
+# Curated coding-prompt datasets. We take only the PROMPT text (instruction/problem); the
+# teacher (Ridge/27B) regenerates all completions, so licenses on the answers don't bind us
+# and quality is uniform. (id, candidate prompt fields, config, split).
+CODE_DATASETS = [
+    ("ise-uiuc/Magicoder-OSS-Instruct-75K", ("problem", "instruction"), None, "train"),
+    ("ise-uiuc/Magicoder-Evol-Instruct-110K", ("instruction",), None, "train"),
+    ("glaiveai/glaive-code-assistant", ("question",), None, "train"),
+    ("m-a-p/CodeFeedback-Filtered-Instruction", ("query", "instruction"), None, "train"),
+]
+
+def from_hf_instruct(limit):
+    """Pull real coding prompts (instruction text only) from curated HF datasets."""
+    try:
+        from datasets import load_dataset
+    except ImportError:
+        print("  [instruct] pip install datasets to use this source; skipping"); return []
+    out, per = [], max(1, limit // len(CODE_DATASETS))
+    for ds_id, fields, cfg, split in CODE_DATASETS:
+        got = 0
+        try:
+            ds = load_dataset(ds_id, cfg, split=split, streaming=True)
+            for r in ds:
+                txt = next((r[f] for f in fields if r.get(f)), None)
+                txt = _clean_prompt(txt) if txt else None
+                if txt:
+                    out.append(txt); got += 1
+                    if got >= per: break
+        except Exception as e:
+            print(f"  [instruct] {ds_id} failed ({type(e).__name__}: {e}); skipping")
+        print(f"  [instruct] {ds_id}: {got}")
+    return out
+
 def from_swebench(hf_id, limit):
     try:
         from datasets import load_dataset
@@ -143,6 +175,7 @@ def main():
     per = max(1, a.n // max(1, len(want)))
     pool = []
     if "swebench" in want:         pool += from_swebench(a.hf_swebench, per)
+    if "instruct" in want:         pool += from_hf_instruct(per)
     if "toolcalls" in want:        pool += from_toolcalls(per)
     if "local_transcripts" in want: pool += from_local(a.local_glob, per)
     if "seed" in want or not pool:
