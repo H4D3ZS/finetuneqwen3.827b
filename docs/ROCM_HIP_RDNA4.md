@@ -24,8 +24,28 @@ supported by the ROCm 7 runtime already on this machine.
 |---|---|
 | HIP **runtime** (`amdhip64_7.dll`, `amd_comgr_3.dll`) | ✅ present (ships with Adrenalin = ROCm 7, native gfx1200) |
 | ROCMFPX **gfx1200 HIP kernels** (`ggml/rocmfp4`, `ggml/rocmfpx`) | ✅ in the fork; `scripts/build-rdna4.sh` targets gfx1200 |
-| HIP **SDK** (compiler `clang++`/`hipcc`, device libs, rocWMMA) | ⬜ **install from GitHub** (AMD HIP SDK for Windows matching ROCm 7, or TheRock) |
+| HIP **SDK** (compiler `clang++`/`hipcc`, device libs, rocWMMA) | ⬜ build via **TheRock** — `local/build_rocm_therock_windows.ps1` |
 | Windows HIP **build** of ROCmFPX | ⬜ `local/build_hip_rdna4_windows.ps1` (this repo) |
+
+### Getting the HIP SDK: TheRock (confirmed gfx1200 support)
+
+The `develop` branch of [ROCm/ROCm](https://github.com/ROCm/ROCm/tree/develop) points to
+[**TheRock**](https://github.com/ROCm/TheRock) — ROCm's unified CMake build with **Windows
+support**. Its `cmake/therock_amdgpu_targets.cmake` lists our card as a first-class target
+(not a fallback):
+
+```cmake
+therock_add_amdgpu_target(gfx1200 "AMD RX 9060 / XT" FAMILY dgpu-all gfx120X-all
+```
+
+Two ways to get the SDK:
+- **From source (bleeding edge):** `local/build_rocm_therock_windows.ps1` — clones TheRock,
+  fetches sources, and builds with `-DTHEROCK_AMDGPU_TARGETS=gfx1200`. Long (hours) but latest.
+- **Prebuilt Windows dist (faster, still real):** if a release tarball covers gfx120X, grab it
+  from [TheRock releases](https://github.com/ROCm/TheRock/releases) and point `$env:HIP_SDK`
+  at its `rocm/` dir — no multi-hour build.
+
+Prereqs either way: Visual Studio 2022 (C++), Python 3.10+, CMake 3.25+, Ninja, git.
 
 The card is Navi 44 = **`gfx1200`**. Do NOT build `gfx1201` (that's Navi 48 / RX 9070) — a
 mismatched build loads a model then **segfaults** (documented in the fork's
@@ -33,10 +53,12 @@ mismatched build loads a model then **segfaults** (documented in the fork's
 
 ## Steps
 
-1. **Get the HIP SDK** (the one missing piece) from GitHub — the AMD HIP SDK for Windows
-   matching the installed ROCm 7 runtime, or TheRock/community gfx1200 device-lib bundle.
-   It must provide `bin\clang++.exe` (or `amdclang++`), the gfx1200 device libraries, and
-   rocWMMA headers.
+1. **Get the HIP SDK** (the one missing piece) — build it for gfx1200 via TheRock:
+   ```powershell
+   .\local\build_rocm_therock_windows.ps1 -Dest C:\src\TheRock
+   ```
+   (or grab a prebuilt gfx120X dist from TheRock releases). It provides `bin\clang++.exe`,
+   the gfx1200 device libraries, and rocWMMA headers.
 2. **Build** (PowerShell):
    ```powershell
    $env:HIP_SDK = "C:\Program Files\AMD\ROCm\7.0"   # your HIP SDK root
