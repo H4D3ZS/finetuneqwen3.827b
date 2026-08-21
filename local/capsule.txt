@@ -1,0 +1,336 @@
+REPO STRUCTURE CAPSULE (stable; definitions, not bodies).
+
+## Files
+.gitattributes
+.gitignore
+.gitmodules
+MOE_UPCYCLE_PLAN.md
+PLAN.md
+README.md
+RENTAL.md
+RUNBOOK.md
+cmake/rocm_hip_xplatform.cmake
+docs/ROCM_HIP_RDNA4.md
+kortex-latent/ARCHITECTURE.md
+kortex-latent/QUESTIONS-FOR-CARLO.md
+kortex-latent/ROADMAP.md
+kortex-latent/hrr_scaling.py
+kortex-latent/projector.py
+kortex-latent/test_battery.py
+local/KV_CAPSULE.md
+local/abliterate.py
+local/abliterate.sh
+local/bench_mtp.sh
+local/build_dense27b_fast.sh
+local/build_hip_glue.sh
+local/build_hip_rdna4_windows.ps1
+local/build_rocm_therock_windows.ps1
+local/claude_code_local.md
+local/convert_quant.sh
+local/imatrix-calib.txt
+local/kv_capsule.py
+local/litellm_config.yaml
+local/qwen-sharp-chat_template.jinja
+local/repo-capsule.bin.meta
+local/serve_coder.sh
+local/serve_dense27b.sh
+local/serve_distilled.sh
+local/serve_stack.sh
+model_card/BUILD.md
+model_card/MODEL_CARD.md
+model_card/build_rocmfpx.sh
+node/01_build_corpus.py
+node/02_teacher_generate.py
+node/02_teacher_gguf.py
+node/02b_teacher_api.py
+node/03_distill_train.py
+node/03_unsloth_sft.py
+node/05_upcycle.py
+node/PREFLIGHT.md
+node/SMOKE.md
+node/build_rocmfpx.sh
+node/eval.py
+node/merge_lora.py
+node/prompts.jsonl
+node/prompts_bulk.jsonl
+node/prompts_seed.jsonl
+node/prompts_val.jsonl
+node/requirements.txt
+node/resume_smoke.sh
+node/run_auto.sh
+node/run_node.sh
+node/run_poc.sh
+node/serve_empero.sh
+node/serve_teacher.sh
+node/swap_to_38.sh
+node/train_only.sh
+reference/reference-MTP-and-cliff-findings.md
+
+## Definitions
+### kortex-latent/hrr_scaling.py
+def rand_unit(n, d=D):
+def bind(k, v):            # circular convolution
+def unbind(c, k):          # circular correlation (approx inverse)
+def cos(a, b):
+def retrieval_acc(keys, vals, gist, n_probe=200):
+def flat_gist(keys, vals):
+def hier_acc(keys, vals, bucket=128, levels=2):
+### kortex-latent/projector.py
+class GistProjector(nn.Module):
+    def forward(self, gist: torch.Tensor) -> torch.Tensor:
+    def calibrate_output_scale(self, embed_weight: torch.Tensor):
+def load_gist_klc(path: str):
+### kortex-latent/test_battery.py
+URL = "http://127.0.0.1:8080/v1/chat/completions"
+def ask(prompt, max_tokens=700, effort="medium", think=True, temp=0.7):
+def admits_nonexistence(t):
+### local/abliterate.py
+HARMLESS = [
+TARGETED = [
+def parse():
+def mean_dir(model, tok, prompts, layer_idx):
+def main():
+    def orthogonalize(W):
+### local/abliterate.sh
+SRC="${1:?usage: ./abliterate.sh <bf16-model-dir>}"
+OUT="${2:-${SRC%/}-abliterated}"
+OFFLOAD="${OFFLOAD:-/e/offload}"   # E: games drive has ~80GB; change if needed
+### local/bench_mtp.sh
+MODEL="${1:?usage: bench_mtp.sh <model.gguf>}"
+SERVER="${LLAMA_SERVER:-llama-server}"
+PORT="${PORT:-8080}"
+PROMPT="${PROMPT:-Write a Python function that merges two sorted lists. Explain briefly.}"
+NPREDICT="${NPREDICT:-200}"
+REPS="${REPS:-3}"
+BEST_NM="${BEST_NM:-8}"
+### local/build_dense27b_fast.sh
+ROCMFPX="${ROCMFPX_DIR:-$HOME/Desktop/ROCmFPX}"
+SRC="${SRC:-$HOME/models/Qwen3.8-27B}"            # safetensors download target
+OUT="$ROCMFPX/Qwen3.8-27B-Q3_0_ROCMFPX_AGENT.gguf"
+QUANT="${QUANT:-Q3_0_ROCMFPX_AGENT}"              # or Q3_0_ROCMFPX (no agent bias)
+### local/build_hip_glue.sh
+GLUE="${GLUE:-/c/src/rocm-glue}"
+CORE="$SP/_rocm_sdk_core"; LIBS="$SP/_rocm_sdk_libraries_gfx120X_all"
+DUMPBIN=$(find "${VSMSVC:?set VSMSVC to your MSVC toolchain root}" -iname dumpbin.exe -path "*Hostx64/x64*" | head -1)
+LIB=$(find "$VSMSVC" -iname lib.exe -path "*Hostx64/x64*" | head -1)
+INC="$GLUE/include"; mkdir -p "$INC/rocblas/internal" "$INC/hipblas" "$INC/hipblas-common"
+BITCODE="$CORE/lib/llvm/amdgcn/bitcode"
+ARCH="${ROCM_HIP_ARCH:-gfx1200}"
+NAMES=r"(isgreater|isgreaterequal|isless|islessequal|islessgreater|isunordered)"
+### local/convert_quant.sh
+SRC="${1:?usage: ./convert_quant.sh <abliterated-bf16-dir>}"
+ROCMFPX="${ROCMFPX_DIR:-$HOME/Desktop/ROCmFPX}"
+NAME="qwen38-distilled-a3b-abliterated"
+BF16="$ROCMFPX/${NAME}-bf16.gguf"
+OUT="$ROCMFPX/${NAME}-Q2_0_ROCMFPX.gguf"
+### local/kv_capsule.py
+DEF_PATTERNS = [
+CODE_EXT = {".rs", ".py", ".js", ".ts", ".sh", ".go", ".c", ".h", ".cpp", ".toml", ".jinja"}
+IGNORE_DIRS = {".git", "target", "node_modules", "ROCmFPX", ".aim", ".kv-slots",
+IGNORE_FILE_RE = re.compile(r'^(capsule\d*\.txt|.*\.bin)$')
+def compile_capsule(repo: str) -> str:
+def _post(url: str, payload: dict) -> dict:
+def _meta_path(slot_file: str) -> str:
+def _capsule_fingerprint(text: str) -> str:
+def bake(capsule_path: str, server: str, slot_file: str, slot: int) -> None:
+def restore(server: str, slot_file: str, slot: int, capsule_path: str = "") -> int:
+def main() -> int:
+### local/serve_coder.sh
+MODEL="${MODEL:-$HOME/models/Qwen3.8-27B-ABLITERATED-Q3_K_M.gguf}"
+ROCMFPX_DIR="${ROCMFPX_DIR:-$HOME/ROCmFPX}"     # your local Vulkan build, or the node HIP build
+PORT="${PORT:-8080}"
+CTX="${CTX:-16384}"                             # dense model; keep modest to fit 16GB KV
+NGL="${NGL:-99}"
+SERVER="${SERVER:-$ROCMFPX_DIR/build/bin/llama-server}"
+### local/serve_dense27b.sh
+ROCMFPX="${ROCMFPX_DIR:-$HOME/Desktop/ROCmFPX}"
+SERVER="$ROCMFPX/build/bin/Release/llama-server.exe"
+GGUF="${GGUF:-$ROCMFPX/ridge/Qwen3.8-27B-Ridge-3.7bpw.gguf}"
+CTX="${CTX:-16384}"   # 11.7GB weights leave ~4GB; hybrid attn (16 full layers) keeps KV cheap
+EFFORT="${REASONING_EFFORT:-medium}"
+### local/serve_distilled.sh
+MODEL="${MODEL:-$HOME/models/Qwen3.8-Distill-35B-A3B-Coder-Abliterated-Q2KXL_ROCMFPX.gguf}"
+ROCMFPX_DIR="${ROCMFPX_DIR:-$HOME/ROCmFPX}"     # your LOCAL RDNA4 build (gfx1200)
+PORT="${PORT:-8080}"
+CTX="${CTX:-32768}"                             # 12GB model on 16GB leaves ~4GB KV -> ~32k single-stream
+NGL="${NGL:-99}"
+PARALLEL="${PARALLEL:-1}"                        # 16GB: pick context (np=1) OR concurrency (np>1,-c lower)
+SERVER="${SERVER:-$ROCMFPX_DIR/build/bin/llama-server}"
+### local/serve_stack.sh
+REPO="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
+KORTEX="${KORTEX_DIR:-/c/Users/HADES/Documents/vscodium-rust/kortex}"
+SERVER="${SERVER:-$HOME/Desktop/ROCmFPX/build/bin/Release/llama-server.exe}"
+PROXY="${AIM_PROXY:-$KORTEX/target/release/aim-proxy.exe}"
+MODEL="${MODEL:-/c/Users/HADES/Desktop/Qwen3.8-27B-W2imat-ROCmFPX.gguf}"
+ALIAS="${ALIAS:-qwen38-27b-w2i}"
+CTX="${CTX:-40960}"   # under the 64K MTP cliff (reference/reference-MTP-and-cliff-findings.md)
+KVTYPE="${KVTYPE:-q4_0}"   # q4_0 KV to fit long context beside the 11.4GB model; q8_0 if you drop CTX
+REASONING="${REASONING:-medium}"
+CHAT_TEMPLATE="${CHAT_TEMPLATE:-$REPO/local/qwen-sharp-chat_template.jinja}"
+LOGDIR="${LOGDIR:-$REPO/.stack-logs}"; mkdir -p "$LOGDIR"
+CACHEDIR="${CACHEDIR:-$REPO/.kv-cache}"; mkdir -p "$CACHEDIR"
+SLOTDIR="${SLOTDIR:-$REPO/.kv-slots}"; mkdir -p "$SLOTDIR"
+SPECTYPE="${SPECTYPE:-draft-mtp,ngram-map-k}"
+KORTEX_AIM_CATALOG="$REPO/.aim" KORTEX_WORKSPACE="$REPO" \
+KORTEX_UPSTREAM_ANTHROPIC="http://127.0.0.1:4000" \
+KORTEX_RETRIEVAL_BUDGET_MS="${KORTEX_RETRIEVAL_BUDGET_MS:-1500}" \
+### model_card/build_rocmfpx.sh
+REPO="${ROCMFPX_REPO:-https://github.com/charlie12345/ROCmFPX.git}"
+COMMIT="${ROCMFPX_COMMIT:-b2f5829db8beefc22b49481247d180a48b06793a}"
+DIR="${ROCMFPX_DIR:-$PWD/ROCmFPX}"
+GFX="${GFX:-gfx942}"   # MI300X
+### node/01_build_corpus.py
+CODE_DATASETS = [
+_SECRET_RE = re.compile(
+def _scrub(s):
+_SENSITIVE_RE = re.compile(r"""(?ix)
+def route_for(prompt, source):
+def from_hf_instruct(limit):
+CC_TOOLS = {
+ACTIONS = [
+SUBSYSTEMS = [
+STACKS = [
+BARS = [
+def _make_task():
+def _tool_block(k):
+def from_cc_tools(limit):
+SEC_ACTIONS = [
+SEC_TARGETS = [
+def from_cybersec(limit):
+def from_agentic(limit):
+def from_debug(limit):
+def from_swebench(hf_id, limit):
+def from_local(glob_pat, limit):
+def parse():
+def main():
+    def add(src, items): pool.extend((p, src) for p in items)
+### node/02_teacher_generate.py
+def parse():
+def load_prompts(path, n):
+def build_texts(tok, prompts, think):
+def write_shards(pairs, out_dir, shard_size):
+def run_vllm(a, prompts):
+def run_hf(a, prompts):
+def main():
+### node/02_teacher_gguf.py
+def parse():
+def load_prompts(path, n, route="all"):
+def wait_for_server(url, tries=60):
+def one(a, prompt):
+def load_done_prompts(out_dir):
+def main():
+### node/02b_teacher_api.py
+def parse():
+def pid(prompt):                       # stable id so resume can skip finished prompts
+def load_done(out_dir):
+def build_request(a, key, prompt):
+def extract(a, d):
+def worker(a, key, in_q, writer, counter, stop):
+class ShardWriter:
+    def __init__(self, out_dir, shard_size):
+    def _roll(self):
+    def write(self, id_, prompt, completion):
+    def close(self):
+def main():
+### node/03_distill_train.py
+def parse():
+class DistillData(Dataset):
+    def __init__(self, data_dir, tok, seq_len):
+    def __len__(self): return len(self.rows)
+    def __getitem__(self, i):
+def student_cfg_vocab(model_id):
+def main():
+### node/03_unsloth_sft.py
+def parse():
+def load_pairs(data_dir):
+def main():
+### node/05_upcycle.py
+def parse():
+def is_ffn(name):
+def layer_of(name):
+def mlp_prefix_map(idx):
+def build_index(src):
+def split_ffn(gate, up, down, E, order=None):
+def reconstruct(gate_up, down_e):
+def make_moe_config(src, a):
+def convert(a):
+    SHARD_LIMIT = 2 * 1024**3   # 2GB: flush sooner, lower peak RAM (was silently dying at 4GB)
+    def flush():
+    def emit(name, t):
+    def read(name):
+def sz(p):
+def load_cluster_order(a):
+def verify(a):
+def forward_check(a):
+def main():
+### node/build_rocmfpx.sh
+REPO="${ROCMFPX_REPO:-https://github.com/charlie12345/ROCmFPX.git}"
+COMMIT="${ROCMFPX_COMMIT:-b2f5829db8beefc22b49481247d180a48b06793a}"
+DIR="${ROCMFPX_DIR:-$PWD/ROCmFPX}"
+GFX="${GFX:-gfx942}"   # MI300X
+### node/eval.py
+TASKS = [
+def _extract_py(t):
+def _py_defines(t, name): return re.search(rf"def\s+{name}\s*\(", _extract_py(t)) is not None
+def _py_defines_any(t, name): return name in _extract_py(t)
+def _py_runs(t, asrt):
+def _has_json_call(t, name, keys):
+def gen(model, tok, prompt, think=True):
+def load(model_id, base_for_lora=None):
+def score(model, tok):
+def main():
+### node/merge_lora.py
+def main():
+### node/resume_smoke.sh
+STUDENT="${STUDENT:-Qwen/Qwen3.6-35B-A3B}"
+EPOCHS="${EPOCHS:-1}"
+ATTN_IMPL="$ATTN_IMPL" python3 03_unsloth_sft.py --student "$STUDENT" \
+### node/run_auto.sh
+TARGET="${TARGET:-850}"        # ~800 usable after a few failures - the budget cap you chose
+STUDENT="${STUDENT:-Qwen/Qwen3.6-35B-A3B}"
+TEACHER_URL="http://127.0.0.1:8081/v1/chat/completions"
+LOG=/root/finetune/node/auto_run.log
+  GGUF=/scratch/teacher/Qwen3.8-27B-ABLITERATED-Q8_0.gguf PORT=8081 CTX=8192 PARALLEL=32 \
+NGOT=$(wc -l < "$SCRATCH/teacher_data/stream.jsonl" 2>/dev/null || echo 0)
+### node/run_node.sh
+TEACHER_MODE="${TEACHER_MODE:-gguf}"     # gguf (abliterated) | hf (base + local abliterate)
+STUDENT="Qwen/Qwen3.6-35B-A3B"; TEACHER_HF="Qwen/Qwen3.8-27B"
+TORCH_VER="$(python3 -c 'import torch;print(torch.__version__)')"
+  USE_EMPERO="${USE_EMPERO:-1}"
+  ABL_ROUTE="all"; [ "$USE_EMPERO" = "1" ] && ABL_ROUTE="sensitive"
+ATTN_IMPL="$ATTN_IMPL" python3 03_unsloth_sft.py --student "$STUDENT" \
+  MERGED="$SCRATCH/student-merged"
+### node/run_poc.sh
+TEACHER_GGUF="${TEACHER_GGUF:-/scratch/teacher/Qwen3.8-27B-ABLITERATED-Q8_0.gguf}"
+STUDENT="${STUDENT:-Qwen/Qwen3.6-35B-A3B}"
+PARALLEL="${PARALLEL:-32}"     # MI300X 192GB: teacher is 27GB, room for many slots
+MAXNEW="${MAXNEW:-4096}"        # headroom so reasoning doesn't truncate mid-<think>
+BATCH="${BATCH:-8}"            # 192GB fits large batch; 8x fewer forward passes than batch=1
+GRAD_ACCUM="${GRAD_ACCUM:-2}"  # batch 8 x accum 2 = effective 16 (same as old 1x16)
+GGUF="$TEACHER_GGUF" PORT=8081 CTX=8192 PARALLEL="$PARALLEL" bash serve_teacher.sh \
+SERVE_PID=$!
+ATTN_IMPL="$ATTN_IMPL" python3 03_unsloth_sft.py --student "$STUDENT" \
+### node/serve_empero.sh
+REPO="${LLAMACPP_REPO:-https://github.com/ggml-org/llama.cpp.git}"
+LCPP="${EMPERO_LCPP:-$PWD/llama.cpp-stock}"
+PORT="${EMPERO_PORT:-8082}"
+CTX="${CTX:-8192}"
+PARALLEL="${PARALLEL:-16}"        # concurrent slots - what makes generation cheap
+GFX="${GFX:-gfx942}"             # MI300X
+GGUF="${EMPERO_GGUF:-/scratch/empero/Qwen3.8-9B-Q8_0.gguf}"
+HF_REPO="${EMPERO_HF:-empero-ai/Qwen3.8-9B-GGUF}"
+### node/serve_teacher.sh
+GGUF="${GGUF:-/scratch/teacher/Qwen3.8-27B-ABLITERATED-Q8_0.gguf}"
+PORT="${PORT:-8081}"
+CTX="${CTX:-8192}"
+PARALLEL="${PARALLEL:-16}"        # concurrent slots - this is what makes generation cheap
+LCPP="${LCPP:-/root/llama.cpp}"
+### node/swap_to_38.sh
+STUDENT="Qwen/Qwen3.8-35B-A3B"
+LOG=/root/finetune/node/swap38_run.log
+NGOT=$(wc -l < "$SCRATCH/teacher_data/stream.jsonl" 2>/dev/null || echo 0)
+### node/train_only.sh
+STUDENT="${STUDENT:-Qwen/Qwen3.6-35B-A3B}"   # the trainable base (escha W2 / GGUFs are NOT trainable)
+DATA="${DATA:-.}"                             # parent dir; load_pairs gathers teacher_* recursively
+OUT="${OUT:-/scratch/distill/student-distilled}"
+EPOCHS="${EPOCHS:-2}"

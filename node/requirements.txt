@@ -1,6 +1,13 @@
 # Installed by run_mi300x.sh on the node. Pinned loosely - the ROCm torch wheel is
 # installed separately (--index-url rocm6.2) because it must match the driver.
-transformers>=4.44
+#
+# ⚠️ CRITICAL for the DENSE Qwen3.8-27B finetune: the base is model_type `qwen3_5`
+# (arch Qwen3_5ForConditionalGeneration). Support for `qwen3_5` only exists in
+# transformers 5.x — 4.44 will die with `KeyError: qwen3_5`. Our verified-working local
+# env is transformers 5.16.0.dev0. If 5.16 isn't on PyPI yet, install the dev build:
+#   pip install "git+https://github.com/huggingface/transformers@v5.16.0"   # or the exact commit
+# AutoModelForCausalLM maps qwen3_5 -> Qwen3_5ForCausalLM (loads the text tower), verified.
+transformers>=5.16    # was >=4.44 (too old for qwen3_5); see note above
 accelerate>=0.34
 datasets>=2.20
 peft>=0.12

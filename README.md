@@ -1,5 +1,8 @@
 # finetuneqwen3.827b — a fast local coder from one Qwen3.8-27B base
 
+> The runtime stack (GPU engine + repo memory) and full credits — **ROCmFPX by Carlo
+> (charlie12345)** × **kortex by Cyber Ifrit** — are documented in **[STACK.md](STACK.md)**.
+
 **Goal:** a fast, local coding model on the RX 9060 XT (16GB) that *learns from frontier
 teachers* — not a frontier model itself (a ~3B-active model imitates frontier coding, it does
 not become frontier), but a genuinely strong fast coder distilled from real frontier output.

@@ -1,0 +1,12 @@
+{
+  "embedder_id": "lemonade:Qwen3-Embedding-0.6B-GGUF-d1024",
+  "root": "\\\\?\\C:\\Users\\HADES\\Desktop\\finetuneqwen3.827b",
+  "dim": 1024,
+  "bit_width": 4,
+  "chunk_count": 63,
+  "file_count": 30,
+  "source_bytes": 160637,
+  "payload_bytes": 86486,
+  "container_bytes": 99574,
+  "built_unix_secs": 1787276445
+}

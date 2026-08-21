@@ -33,6 +33,9 @@ def parse():
     p.add_argument("--epochs", type=int, default=2)
     p.add_argument("--warmup", type=int, default=50)
     p.add_argument("--save_every", type=int, default=200)
+    p.add_argument("--max_steps", type=int, default=-1,
+                   help="cap optimizer steps (>0). Use e.g. 5 for a cheap on-node SMOKE test that "
+                        "proves load->step->checkpoint works before paying for the full run.")
     p.add_argument("--resume", action="store_true")
     p.add_argument("--no_unsloth", action="store_true", help="force the transformers+peft fallback")
     return p.parse_args()
@@ -116,7 +119,7 @@ def main():
     cfg = SFTConfig(
         output_dir=a.out, per_device_train_batch_size=a.batch,
         gradient_accumulation_steps=a.grad_accum, warmup_steps=a.warmup,
-        num_train_epochs=a.epochs, learning_rate=a.lr, logging_steps=1,
+        num_train_epochs=a.epochs, max_steps=a.max_steps, learning_rate=a.lr, logging_steps=1,
         save_steps=a.save_every, save_total_limit=3, bf16=True,
         optim="adamw_8bit", lr_scheduler_type="cosine", seed=0,
         max_seq_length=a.seq_len, completion_only_loss=True, report_to="none")
